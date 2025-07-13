@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -32,6 +33,12 @@ var (
 
 // NewModel loads backups and returns a model
 func NewModel() (Model, error) {
+	if err := ensureGrubFile(); err != nil {
+		// proceed even if permissions prevent creation
+		if !os.IsPermission(err) {
+			return Model{}, err
+		}
+	}
 	b, err := DiscoverBackups()
 	if err != nil {
 		return Model{}, err

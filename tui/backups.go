@@ -24,7 +24,7 @@ var (
 	SnapshotDir = "/var/backups/boot-snapshots"
 	EfiDir      = "/boot/efi/boot-backups"
 	GrubCustom  = "/etc/grub.d/41_custom_boot_backups"
-	grubHeader  = "#!/bin/sh\nexec tail -n +3 $0\n"
+	grubHeader  = "#!/bin/bash\n"
 )
 
 // DiscoverBackups scans known backup directories and returns BootBackup entries.
@@ -90,11 +90,11 @@ func AddGrubEntry(b BootBackup) error {
 	}
 	defer f.Close()
 
-	entry := fmt.Sprintf("menuentry 'Bootrecov %s' --id bootrecov-%s {\n"+
+	entry := fmt.Sprintf("cat <<'EOF'\nmenuentry 'Bootrecov %s' --id bootrecov-%s {\n"+
 		"    search --file --set=root %s/vmlinuz-linux\n"+
-		"    linux %s/vmlinuz-linux root=UUID=your-root fsck.mode=skip ro\n"+
+		"    linux %s/vmlinuz-linux root=UUID=your-root rw\n"+
 		"    initrd %s/initramfs-linux.img\n"+
-		"}\n",
+		"}\nEOF\n",
 		b.Path, filepath.Base(b.Path), b.Path, b.Path, b.Path)
 
 	if _, err := f.WriteString(entry); err != nil {
@@ -129,14 +129,18 @@ func RemoveGrubEntry(name string) error {
 	id := fmt.Sprintf("bootrecov-%s", name)
 	skip := false
 	for _, l := range lines {
-		if strings.Contains(l, id) {
-			skip = true
-			continue
-		}
 		if skip {
-			if strings.Contains(l, "}") {
+			if strings.TrimSpace(l) == "EOF" {
 				skip = false
 			}
+			continue
+		}
+		if strings.Contains(l, id) {
+			// remove the preceding cat line if present
+			if len(out) > 0 && strings.HasPrefix(strings.TrimSpace(out[len(out)-1]), "cat <<'EOF'") {
+				out = out[:len(out)-1]
+			}
+			skip = true
 			continue
 		}
 		out = append(out, l)

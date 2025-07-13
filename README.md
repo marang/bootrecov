@@ -12,6 +12,8 @@ A CLI and TUI-based recovery tool for Arch Linux that creates and manages bootab
 - Uses `/etc/grub.d/41_custom_boot_backups` for custom entries
 - Built with Go
 
+The custom GRUB file is a Bash script that outputs entries using `cat <<'EOF'` blocks. Bootrecov will create the file with the proper header if it doesn't exist.
+
 ## Getting Started
 
 ```bash
