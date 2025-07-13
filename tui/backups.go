@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -121,4 +122,30 @@ func RemoveGrubEntry(name string) error {
 		out = append(out, l)
 	}
 	return os.WriteFile(GrubCustom, []byte(strings.Join(out, "\n")), 0644)
+}
+
+// ListGrubEntries parses GrubCustom and returns the names of bootrecov entries.
+func ListGrubEntries() ([]string, error) {
+	data, err := os.ReadFile(GrubCustom)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	var entries []string
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "menuentry 'Bootrecov ") {
+			start := strings.Index(line, "Bootrecov ") + len("Bootrecov ")
+			rest := line[start:]
+			end := strings.Index(rest, "'")
+			if end > -1 {
+				path := rest[:end]
+				entries = append(entries, filepath.Base(path))
+			}
+		}
+	}
+	return entries, nil
 }
