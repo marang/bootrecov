@@ -5,9 +5,14 @@ A CLI and TUI-based recovery tool for Arch Linux that creates and manages bootab
 ## Features
 
 - Backs up `/boot` to `/boot/efi`
-- Lists boot backups
+- Lists boot backups and existing GRUB entries
 - Safely generates GRUB menu entries
-- Built with Go + Bubbletea
+- Remove GRUB entries directly from the TUI
+- Styled interface using Bubbletea + Lip Gloss
+- Uses `/etc/grub.d/41_custom_boot_backups` for custom entries
+- Built with Go
+
+The custom GRUB file is a Bash script that outputs entries using `cat <<'EOF'` blocks. Bootrecov will create the file with the proper header if it doesn't exist.
 
 ## Getting Started
 

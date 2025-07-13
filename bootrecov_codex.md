@@ -43,14 +43,17 @@ Now being migrated to Go with Bubbletea for a full-featured interactive terminal
 
 #### ✅ GRUB Entry Management
 - Parse `/etc/grub.d/41_custom_boot_backups`
-- Safely append/remove entries for backups
-- Ensure entries are never overwritten by default `grub-mkconfig`
+ - Safely append/remove entries for backups
+ - Ensure the custom file is a Bash script using `cat <<'EOF'` blocks
+ - Ensure entries are never overwritten by default `grub-mkconfig`
 
 #### ✅ TUI (Bubbletea)
 - Navigate backup list interactively
 - Display GRUB boot entry status
+- View existing GRUB entries and remove them
 - Flag backups with missing files (e.g. missing `initramfs-linux.img`)
 - Mark backups already listed in GRUB
+- Use Lip Gloss for a styled interface
 
 #### ✅ Manual Recovery Hints
 - Generate boot commands for GRUB rescue shell
@@ -90,8 +93,8 @@ go run .
 ---
 
 ## Next Milestone
-- [ ] Scaffold `tui/model.go` and `tui/view.go`
-- [ ] Display list of EFI backups with kernel/initramfs check
-- [ ] Indicate if GRUB entry exists for each backup
-- [ ] Generate/Remove GRUB entry from UI selection
+- [x] Scaffold `tui/model.go` and `tui/view.go`
+- [x] Display list of EFI backups with kernel/initramfs check
+- [x] Indicate if GRUB entry exists for each backup
+- [x] Generate/Remove GRUB entry from UI selection
 
