@@ -5,9 +5,12 @@ A CLI and TUI-based recovery tool for Arch Linux that creates and manages bootab
 ## Features
 
 - Backs up `/boot` to `/boot/efi`
-- Lists boot backups
+- Lists boot backups and existing GRUB entries
 - Safely generates GRUB menu entries
-- Built with Go + Bubbletea
+- Remove GRUB entries directly from the TUI
+- Styled interface using Bubbletea + Lip Gloss
+- Uses `/etc/grub.d/41_custom_boot_backups` for custom entries
+- Built with Go
 
 ## Getting Started
 

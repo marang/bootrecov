@@ -2,6 +2,7 @@ package tui
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,6 +24,7 @@ var (
 	SnapshotDir = "/var/backups/boot-snapshots"
 	EfiDir      = "/boot/efi/boot-backups"
 	GrubCustom  = "/etc/grub.d/41_custom_boot_backups"
+	grubHeader  = "#!/bin/sh\nexec tail -n +3 $0\n"
 )
 
 // DiscoverBackups scans known backup directories and returns BootBackup entries.
@@ -78,7 +80,11 @@ func grubEntryExists(name string) bool {
 
 // AddGrubEntry appends a GRUB menuentry for the backup
 func AddGrubEntry(b BootBackup) error {
-	f, err := os.OpenFile(GrubCustom, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// ensure header exists before appending
+	if err := ensureGrubFile(); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(GrubCustom, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
@@ -93,6 +99,21 @@ func AddGrubEntry(b BootBackup) error {
 
 	if _, err := f.WriteString(entry); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ensureGrubFile creates GrubCustom with header if missing
+func ensureGrubFile() error {
+	data, err := os.ReadFile(GrubCustom)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.WriteFile(GrubCustom, []byte(grubHeader), 0755)
+		}
+		return err
+	}
+	if !bytes.HasPrefix(data, []byte(grubHeader)) {
+		return os.WriteFile(GrubCustom, append([]byte(grubHeader), data...), 0755)
 	}
 	return nil
 }
@@ -121,4 +142,30 @@ func RemoveGrubEntry(name string) error {
 		out = append(out, l)
 	}
 	return os.WriteFile(GrubCustom, []byte(strings.Join(out, "\n")), 0644)
+}
+
+// ListGrubEntries parses GrubCustom and returns the names of bootrecov entries.
+func ListGrubEntries() ([]string, error) {
+	data, err := os.ReadFile(GrubCustom)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+	var entries []string
+	scanner := bufio.NewScanner(bytes.NewReader(data))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if strings.HasPrefix(line, "menuentry 'Bootrecov ") {
+			start := strings.Index(line, "Bootrecov ") + len("Bootrecov ")
+			rest := line[start:]
+			end := strings.Index(rest, "'")
+			if end > -1 {
+				path := rest[:end]
+				entries = append(entries, filepath.Base(path))
+			}
+		}
+	}
+	return entries, nil
 }
