@@ -24,6 +24,7 @@ var (
 	SnapshotDir = "/var/backups/boot-snapshots"
 	EfiDir      = "/boot/efi/boot-backups"
 	GrubCustom  = "/etc/grub.d/41_custom_boot_backups"
+	grubHeader  = "#!/bin/sh\nexec tail -n +3 $0\n"
 )
 
 // DiscoverBackups scans known backup directories and returns BootBackup entries.
@@ -79,7 +80,11 @@ func grubEntryExists(name string) bool {
 
 // AddGrubEntry appends a GRUB menuentry for the backup
 func AddGrubEntry(b BootBackup) error {
-	f, err := os.OpenFile(GrubCustom, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	// ensure header exists before appending
+	if err := ensureGrubFile(); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(GrubCustom, os.O_APPEND|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
@@ -94,6 +99,21 @@ func AddGrubEntry(b BootBackup) error {
 
 	if _, err := f.WriteString(entry); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ensureGrubFile creates GrubCustom with header if missing
+func ensureGrubFile() error {
+	data, err := os.ReadFile(GrubCustom)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return os.WriteFile(GrubCustom, []byte(grubHeader), 0755)
+		}
+		return err
+	}
+	if !bytes.HasPrefix(data, []byte(grubHeader)) {
+		return os.WriteFile(GrubCustom, append([]byte(grubHeader), data...), 0755)
 	}
 	return nil
 }

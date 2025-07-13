@@ -44,6 +44,7 @@ Now being migrated to Go with Bubbletea for a full-featured interactive terminal
 #### ✅ GRUB Entry Management
 - Parse `/etc/grub.d/41_custom_boot_backups`
 - Safely append/remove entries for backups
+- Ensure the custom file starts with a `#!/bin/sh` header
 - Ensure entries are never overwritten by default `grub-mkconfig`
 
 #### ✅ TUI (Bubbletea)

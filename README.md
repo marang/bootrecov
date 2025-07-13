@@ -9,6 +9,7 @@ A CLI and TUI-based recovery tool for Arch Linux that creates and manages bootab
 - Safely generates GRUB menu entries
 - Remove GRUB entries directly from the TUI
 - Styled interface using Bubbletea + Lip Gloss
+- Uses `/etc/grub.d/41_custom_boot_backups` for custom entries
 - Built with Go
 
 ## Getting Started
