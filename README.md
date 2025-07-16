@@ -36,3 +36,23 @@ The interface lists boot backups found under `/boot/efi/boot-backups`. Press **g
 - Built with Go
 
 The custom GRUB file is a Bash script that outputs entries using `cat <<'EOF'` blocks. Bootrecov creates the file with the proper header if it doesn't exist.
+
+## Automated Boot Test with Docker or Podman Compose
+
+A Compose setup is provided to build an Arch Linux VM with QEMU and boot it using **bootrecov**. This requires a host capable of running privileged containers and KVM acceleration.
+
+Run with Docker Compose:
+
+```bash
+docker compose up
+```
+
+Or with Podman Compose:
+
+```bash
+podman compose up
+```
+
+The service installs QEMU and Arch tools, builds the project, creates a small UEFI disk image, installs GRUB and **bootrecov**, then launches QEMU. You can select the generated Bootrecov entry from the GRUB menu to verify the system boots correctly.
+
+All files for this test live under the `docker/` directory.
