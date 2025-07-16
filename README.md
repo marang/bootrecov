@@ -1,6 +1,29 @@
 # bootrecov
 
-A CLI and TUI-based recovery tool for Arch Linux that creates and manages bootable backups of /boot and generates GRUB entries for fallback booting.
+Bootrecov keeps bootable copies of `/boot` and can add them to GRUB so you can boot an older kernel when things break.
+It is written in Go with a simple TUI.
+
+## Who is it for?
+
+- Arch Linux and other pacman based systems
+- Anyone using GRUB and an EFI boot setup
+- Users comfortable with the command line
+
+## Requirements
+
+- Linux with GRUB (tested on Arch)
+- Pacman package manager for the backup hook
+- Go **1.20+** to build from source
+
+## Getting Started
+
+```bash
+git clone https://github.com/marang/bootrecov.git
+cd bootrecov
+go run .
+```
+
+The interface lists boot backups found under `/boot/efi/boot-backups`. Press **g** to add or remove a GRUB entry and **tab** to switch views.
 
 ## Features
 
@@ -12,12 +35,4 @@ A CLI and TUI-based recovery tool for Arch Linux that creates and manages bootab
 - Uses `/etc/grub.d/41_custom_boot_backups` for custom entries
 - Built with Go
 
-The custom GRUB file is a Bash script that outputs entries using `cat <<'EOF'` blocks. Bootrecov will create the file with the proper header if it doesn't exist.
-
-## Getting Started
-
-```bash
-git clone git@github.com:marang/bootrecov.git
-cd bootrecov
-go run .
-```
+The custom GRUB file is a Bash script that outputs entries using `cat <<'EOF'` blocks. Bootrecov creates the file with the proper header if it doesn't exist.
