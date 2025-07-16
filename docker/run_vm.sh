@@ -1,0 +1,64 @@
+#!/bin/bash
+set -euo pipefail
+
+# install packages needed to build and run an Arch VM
+pacman -Sy --noconfirm qemu qemu-arch-extra arch-install-scripts grub efibootmgr edk2-ovmf go git
+
+# build bootrecov binary
+cd /workspace/bootrecov
+if [ ! -f bootrecov ]; then
+    go build -o bootrecov
+fi
+
+IMG=/vm/archvm.img
+MNT=/mnt/archvm
+
+mkdir -p /vm
+
+# create 2G disk image
+dd if=/dev/zero of="$IMG" bs=1M count=2048
+
+# partition disk for UEFI
+parted -s "$IMG" mklabel gpt
+parted -s "$IMG" mkpart ESP fat32 1MiB 256MiB
+parted -s "$IMG" set 1 esp on
+parted -s "$IMG" mkpart primary ext4 256MiB 100%
+
+# setup loop device
+device=$(losetup --find --show "$IMG")
+partprobe "$device"
+mkfs.fat -F32 "${device}p1"
+mkfs.ext4 "${device}p2"
+
+mkdir -p "$MNT"
+mount "${device}p2" "$MNT"
+mkdir -p "$MNT/boot"
+mount "${device}p1" "$MNT/boot"
+
+# install minimal Arch system
+pacstrap "$MNT" base linux linux-firmware grub efibootmgr sudo
+
+# copy bootrecov binary into VM
+install -Dm755 ./bootrecov "$MNT/usr/local/bin/bootrecov"
+
+# enable bootrecov grub file
+touch "$MNT/etc/grub.d/41_custom_boot_backups"
+chmod 755 "$MNT/etc/grub.d/41_custom_boot_backups"
+
+# install grub
+arch-chroot "$MNT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
+arch-chroot "$MNT" grub-mkconfig -o /boot/grub/grub.cfg
+
+# run bootrecov once to generate backup and grub entry
+arch-chroot "$MNT" bootrecov || true
+
+umount "$MNT/boot"
+umount "$MNT"
+losetup -d "$device"
+
+# start the VM. Use ctrl-a x to exit QEMU if using -nographic
+qemu-system-x86_64 \
+  -m 1024 \
+  -drive file="$IMG",format=raw,if=virtio \
+  -bios /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+  -display sdl

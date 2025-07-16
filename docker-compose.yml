@@ -1,0 +1,9 @@
+version: '3.9'
+services:
+  bootrecov-test:
+    image: archlinux:latest
+    privileged: true
+    volumes:
+      - .:/workspace/bootrecov
+    working_dir: /workspace/bootrecov
+    command: bash docker/run_vm.sh
