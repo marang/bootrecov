@@ -8,7 +8,18 @@ jobs:
       - run:
           name: Run tests
           command: go test ./...
+  vm-test:
+    machine:
+      enabled: true
+    resource_class: grub-test-runner
+    steps:
+      - checkout
+      - run: docker compose up --abort-on-container-exit
+      - run: docker compose down
 workflows:
   test:
     jobs:
       - test
+      - vm-test:
+          requires:
+            - test

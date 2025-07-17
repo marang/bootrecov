@@ -15,8 +15,8 @@ MNT=/mnt/archvm
 
 mkdir -p /vm
 
-# create 2G disk image
-dd if=/dev/zero of="$IMG" bs=1M count=2048
+# create 2G disk image quickly
+truncate -s 2G "$IMG"
 
 # partition disk for UEFI
 parted -s "$IMG" mklabel gpt
@@ -24,9 +24,8 @@ parted -s "$IMG" mkpart ESP fat32 1MiB 256MiB
 parted -s "$IMG" set 1 esp on
 parted -s "$IMG" mkpart primary ext4 256MiB 100%
 
-# setup loop device
-device=$(losetup --find --show "$IMG")
-partprobe "$device"
+# setup loop device and expose partitions
+device=$(losetup --find --show -P "$IMG")
 mkfs.fat -F32 "${device}p1"
 mkfs.ext4 "${device}p2"
 
@@ -40,10 +39,6 @@ pacstrap "$MNT" base linux linux-firmware grub efibootmgr sudo
 
 # copy bootrecov binary into VM
 install -Dm755 ./bootrecov "$MNT/usr/local/bin/bootrecov"
-
-# enable bootrecov grub file
-touch "$MNT/etc/grub.d/41_custom_boot_backups"
-chmod 755 "$MNT/etc/grub.d/41_custom_boot_backups"
 
 # install grub
 arch-chroot "$MNT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
