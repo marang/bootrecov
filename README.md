@@ -65,3 +65,21 @@ A GitHub Actions workflow in `.github/workflows/vm-test.yml` can run the QEMU
 boot test automatically. It requires a self-hosted runner with Docker and KVM
 so the `docker compose` service can launch the VM.
 
+### CircleCI self-hosted runner
+
+The `circleci-runner/` directory contains a `Dockerfile` and sample
+`launch-agent-config.yaml` for running a CircleCI runner with KVM support.
+Build and start the runner container with:
+
+```bash
+docker build -t circleci-kvm-runner circleci-runner
+docker run --rm -it --privileged \
+  -v /dev/kvm:/dev/kvm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  circleci-kvm-runner
+```
+
+Replace `YOUR_RUNNER_TOKEN` in `launch-agent-config.yaml` with the token from
+the CircleCI UI. The `vm-test` job in `.circleci/config.yml` will execute the
+Compose-based boot test on this runner.
+
