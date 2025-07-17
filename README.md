@@ -56,3 +56,8 @@ podman compose up
 The service installs QEMU and Arch tools, builds the project, creates a small UEFI disk image, installs GRUB and **bootrecov**, then launches QEMU. You can select the generated Bootrecov entry from the GRUB menu to verify the system boots correctly.
 
 All files for this test live under the `docker/` directory.
+
+## Continuous Integration
+
+A CircleCI workflow runs `go test ./...` to verify the project builds and tests pass.
+
