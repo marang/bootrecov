@@ -61,3 +61,7 @@ All files for this test live under the `docker/` directory.
 
 A CircleCI workflow runs `go test ./...` to verify the project builds and tests pass.
 
+A GitHub Actions workflow in `.github/workflows/vm-test.yml` can run the QEMU
+boot test automatically. It requires a self-hosted runner with Docker and KVM
+so the `docker compose` service can launch the VM.
+
