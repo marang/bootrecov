@@ -59,8 +59,12 @@ device=$(losetup --find --show "$IMG")
 
 # obtain partition offsets and sizes from the image so we can create
 # individual loop devices even when the loop driver lacks partition support
-read BOOT_START BOOT_SIZE ROOT_START ROOT_SIZE < <( \
-  parted -sm "$IMG" unit B print | awk -F: '/^1:/ {bs=$2; bsz=$4} /^2:/ {rs=$2; rsz=$4} END {print bs, bsz, rs, rsz}'
+read BOOT_START BOOT_SIZE ROOT_START ROOT_SIZE < <(
+  parted -sm "$IMG" unit B print |
+    awk -F: '
+      /^1:/ {sub(/B$/,"",$2); sub(/B$/,"",$4); bs=$2; bsz=$4}
+      /^2:/ {sub(/B$/,"",$2); sub(/B$/,"",$4); rs=$2; rsz=$4}
+      END {print bs, bsz, rs, rsz}'
 )
 
 boot_loop=$(losetup --find --show --offset "$BOOT_START" --sizelimit "$BOOT_SIZE" "$IMG")
