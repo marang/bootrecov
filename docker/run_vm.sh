@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+# ensure the loop driver supports partitions. some container hosts load it with
+# `max_part=0`, which prevents creation of loopXpY nodes. attempt to reload the
+# module with a reasonable partition count if possible.
+if [[ -f /sys/module/loop/parameters/max_part && "$(cat /sys/module/loop/parameters/max_part)" -eq 0 ]]; then
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe -r loop >/dev/null 2>&1 || true
+    modprobe loop max_part=8 >/dev/null 2>&1 || true
+  fi
+fi
+
 # ensure loop device nodes exist. some container runtimes don't provide them
 if [[ ! -e /dev/loop-control ]]; then
   modprobe loop 2>/dev/null || true
@@ -8,7 +18,7 @@ fi
 if [[ ! -e /dev/loop-control ]]; then
   mknod /dev/loop-control c 10 237
 fi
-for i in $(seq 0 7); do
+for i in $(seq 0 31); do
   [[ -e /dev/loop${i} ]] || mknod /dev/loop${i} b 7 ${i}
 done
 
@@ -35,14 +45,14 @@ MNT=/mnt/archvm
 
 mkdir -p /vm
 
-# create 2G disk image quickly
-truncate -s 2G "$IMG"
+# create larger disk image so pacstrap doesn't run out of space
+truncate -s 8G "$IMG"
 
 # partition disk for UEFI
 parted -s "$IMG" mklabel gpt
-parted -s "$IMG" mkpart ESP fat32 1MiB 256MiB
+parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
-parted -s "$IMG" mkpart primary ext4 256MiB 100%
+parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
 # helper to wait for partition device nodes
 wait_for_partitions() {
@@ -63,8 +73,20 @@ wait_for_partitions() {
 
 # setup loop device and expose partitions
 device=$(losetup --find --show -P "$IMG")
+
+cleanup_loop() {
+  local d="$1"
+  losetup -d "$d" >/dev/null 2>&1 || true
+  for p in {1..16}; do
+    rm -f "${d}p${p}"
+  done
+}
+
+trap '[[ -n "${device:-}" ]] && cleanup_loop "$device"' EXIT
+
 if ! wait_for_partitions "$device"; then
     echo "Failed to create loop partitions for $device" >&2
+    cleanup_loop "$device"
     exit 1
 fi
 mkfs.fat -F32 "${device}p1"
@@ -85,17 +107,54 @@ install -Dm755 ./bootrecov "$MNT/usr/local/bin/bootrecov"
 arch-chroot "$MNT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 arch-chroot "$MNT" grub-mkconfig -o /boot/grub/grub.cfg
 
-# run bootrecov once to generate backup and grub entry
-arch-chroot "$MNT" bootrecov || true
+
+# bootrecov requires a TTY for its interactive UI which isn't available during
+# automated image creation. Skip running it here; users can invoke it manually
+# once the VM boots.
 
 umount "$MNT/boot"
 umount "$MNT"
-losetup -d "$device"
+cleanup_loop "$device"
+device=""
 
 # start the VM. Use ctrl-a x to exit QEMU if using -nographic
+# locate an OVMF firmware image. different distros install it to different
+# paths, so check a few common locations. try installing the firmware if it's
+# missing.
+find_ovmf() {
+  for p in \
+    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+    /usr/share/edk2/ovmf/OVMF_CODE.fd \
+    /usr/share/edk2/ovmf/x64/OVMF_CODE.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF.fd \
+    /usr/share/qemu/OVMF_CODE.fd \
+    /usr/share/qemu/OVMF.fd; do
+    [[ -f "$p" ]] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+OVMF_BIOS="$(find_ovmf || true)"
+
+if [[ -z "$OVMF_BIOS" ]]; then
+  if command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm edk2-ovmf ovmf >/dev/null 2>&1 || true
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update >/dev/null 2>&1 && apt-get install -y ovmf >/dev/null 2>&1 || true
+  fi
+  OVMF_BIOS="$(find_ovmf || true)"
+fi
+
+if [[ -z "$OVMF_BIOS" ]]; then
+  echo "OVMF firmware not found. Install the 'edk2-ovmf' or 'ovmf' package." >&2
+  exit 1
+fi
+
 qemu-system-x86_64 \
   -m 1024 \
   -drive file="$IMG",format=raw,if=virtio \
-  -bios /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+  -bios "$OVMF_BIOS" \
   -display sdl
 
