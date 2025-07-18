@@ -1,8 +1,8 @@
 #!/bin/bash
 set -euo pipefail
 
-# fail early if loop devices are unavailable (common with rootless Podman)
-if [[ ! -e /dev/loop-control ]]; then
+# fail early if loop devices are inaccessible (common with rootless Podman)
+if [[ ! -e /dev/loop-control ]] || ! losetup -f >/dev/null 2>&1; then
   echo "Loop devices are required. Run this container in privileged mode as root" >&2
   echo "e.g. sudo podman compose up" >&2
   exit 1

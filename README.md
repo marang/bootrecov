@@ -54,7 +54,8 @@ podman compose up
 ```
 
 **Note:** Podman must run with root privileges (e.g. `sudo podman compose up`)
-because the test script uses loop devices. Running rootless will fail with an
+because the test script uses loop devices. Rootless Podman cannot access loop
+devices even when the container is marked `privileged`, so it will fail with an
 error like:
 
 ```
