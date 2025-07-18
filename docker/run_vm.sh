@@ -47,7 +47,12 @@ parted -s "$IMG" mkpart primary ext4 256MiB 100%
 # setup loop device and expose partitions
 device=$(losetup --find --show -P "$IMG")
 # ensure partition nodes are available when udev is not running
-partprobe "$device"
+partprobe "$device" || true
+# fallback when /dev/loop?p? nodes are missing
+if [[ ! -e "${device}p1" ]]; then
+    partx -u "$device"
+    sleep 1
+fi
 mkfs.fat -F32 "${device}p1"
 mkfs.ext4 "${device}p2"
 
