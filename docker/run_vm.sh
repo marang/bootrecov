@@ -51,7 +51,15 @@ partprobe "$device" || true
 # fallback when /dev/loop?p? nodes are missing
 if [[ ! -e "${device}p1" ]]; then
     partx -u "$device"
-    sleep 1
+fi
+# wait briefly for loop partitions to appear
+for _ in {1..10}; do
+    [[ -e "${device}p1" && -e "${device}p2" ]] && break
+    sleep 0.2
+done
+if [[ ! -e "${device}p1" || ! -e "${device}p2" ]]; then
+    echo "Failed to create loop partitions for $device" >&2
+    exit 1
 fi
 mkfs.fat -F32 "${device}p1"
 mkfs.ext4 "${device}p2"
