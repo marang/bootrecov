@@ -22,7 +22,7 @@ fi
 # install packages needed to build and run an Arch VM
 # qemu now requires choosing a provider. "qemu-desktop" includes the SDL UI used
 # in this script and replaces the old "qemu"/"qemu-arch-extra" packages.
-pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted
+pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted dosfstools
 
 # build bootrecov binary
 cd /workspace/bootrecov
