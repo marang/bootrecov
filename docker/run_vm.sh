@@ -83,8 +83,10 @@ install -Dm755 ./bootrecov "$MNT/usr/local/bin/bootrecov"
 arch-chroot "$MNT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
 arch-chroot "$MNT" grub-mkconfig -o /boot/grub/grub.cfg
 
-# run bootrecov once to generate backup and grub entry
-arch-chroot "$MNT" bootrecov || true
+
+# bootrecov requires a TTY for its interactive UI which isn't available during
+# automated image creation. Skip running it here; users can invoke it manually
+# once the VM boots.
 
 umount "$MNT/boot"
 umount "$MNT"
@@ -92,9 +94,27 @@ losetup -d "$boot_dev"
 losetup -d "$root_dev"
 
 # start the VM. Use ctrl-a x to exit QEMU if using -nographic
+# locate an OVMF firmware image. different distros install it to different
+# paths, so check a few common locations.
+OVMF_BIOS=""
+for p in \
+  /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+  /usr/share/OVMF/OVMF_CODE.fd \
+  /usr/share/OVMF/OVMF_CODE_4M.fd \
+  /usr/share/qemu/OVMF_CODE.fd; do
+  if [[ -f "$p" ]]; then
+    OVMF_BIOS="$p"
+    break
+  fi
+done
+if [[ -z "$OVMF_BIOS" ]]; then
+  echo "OVMF firmware not found" >&2
+  exit 1
+fi
+
 qemu-system-x86_64 \
   -m 1024 \
   -drive file="$IMG",format=raw,if=virtio \
-  -bios /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+  -bios "$OVMF_BIOS" \
   -display sdl
 
