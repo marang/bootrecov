@@ -53,6 +53,14 @@ Or with Podman Compose:
 podman compose up
 ```
 
+**Note:** Podman must run with root privileges (e.g. `sudo podman compose up`)
+because the test script uses loop devices. Running rootless will fail with an
+error like:
+
+```
+losetup: /vm/archvm.img: failed to set up loop device: No such file or directory
+```
+
 The service installs QEMU and Arch tools, builds the project, creates a small UEFI disk image, installs GRUB and **bootrecov**, then launches QEMU. You can select the generated Bootrecov entry from the GRUB menu to verify the system boots correctly.
 
 All files for this test live under the `docker/` directory.
