@@ -54,36 +54,33 @@ parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
 parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
-# helper to wait for partition device nodes
-wait_for_partitions() {
-  local dev="$1"
-  for _ in $(seq 1 50); do
-    if [[ -e "${dev}p1" && -e "${dev}p2" ]]; then
-      return 0
-    fi
-    partprobe "$dev" >/dev/null 2>&1 || true
-    partx -u "$dev" >/dev/null 2>&1 || true
-    if command -v udevadm >/dev/null 2>&1; then
-      udevadm settle --timeout=1 --exit-if-exists="${dev}p2" >/dev/null 2>&1 || true
-    fi
-    sleep 0.1
-  done
-  return 1
+# set up a loop device for the whole disk image
+device=$(losetup --find --show "$IMG")
+
+# obtain partition offsets and sizes from the image so we can create
+# individual loop devices even when the loop driver lacks partition support
+read BOOT_START BOOT_SIZE ROOT_START ROOT_SIZE < <( \
+  parted -sm "$IMG" unit B print | awk -F: '/^1:/ {bs=$2; bsz=$4} /^2:/ {rs=$2; rsz=$4} END {print bs, bsz, rs, rsz}'
+)
+
+boot_loop=$(losetup --find --show --offset "$BOOT_START" --sizelimit "$BOOT_SIZE" "$IMG")
+root_loop=$(losetup --find --show --offset "$ROOT_START" --sizelimit "$ROOT_SIZE" "$IMG")
+
+cleanup_loop() {
+  losetup -d "$boot_loop" >/dev/null 2>&1 || true
+  losetup -d "$root_loop" >/dev/null 2>&1 || true
+  losetup -d "$device" >/dev/null 2>&1 || true
 }
 
-# setup loop device and expose partitions
-device=$(losetup --find --show -P "$IMG")
-if ! wait_for_partitions "$device"; then
-    echo "Failed to create loop partitions for $device" >&2
-    exit 1
-fi
-mkfs.fat -F32 "${device}p1"
-mkfs.ext4 "${device}p2"
+trap cleanup_loop EXIT
+
+mkfs.fat -F32 "$boot_loop"
+mkfs.ext4 "$root_loop"
 
 mkdir -p "$MNT"
-mount "$root_dev" "$MNT"
+mount "$root_loop" "$MNT"
 mkdir -p "$MNT/boot"
-mount "$boot_dev" "$MNT/boot"
+mount "$boot_loop" "$MNT/boot"
 
 # install minimal Arch system
 pacstrap "$MNT" base linux linux-firmware grub efibootmgr sudo
@@ -102,8 +99,8 @@ arch-chroot "$MNT" grub-mkconfig -o /boot/grub/grub.cfg
 
 umount "$MNT/boot"
 umount "$MNT"
-losetup -d "$boot_dev"
-losetup -d "$root_dev"
+cleanup_loop
+device=""
 
 # start the VM. Use ctrl-a x to exit QEMU if using -nographic
 # locate an OVMF firmware image. different distros install it to different
