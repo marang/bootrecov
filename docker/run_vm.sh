@@ -1,6 +1,24 @@
 #!/bin/bash
 set -euo pipefail
 
+# ensure loop device nodes exist. some container runtimes don't provide them
+if [[ ! -e /dev/loop-control ]]; then
+  modprobe loop 2>/dev/null || true
+fi
+if [[ ! -e /dev/loop-control ]]; then
+  mknod /dev/loop-control c 10 237
+fi
+for i in $(seq 0 7); do
+  [[ -e /dev/loop${i} ]] || mknod /dev/loop${i} b 7 ${i}
+done
+
+# fail early if loop devices remain inaccessible (common with rootless Podman)
+if ! losetup -f >/dev/null 2>&1; then
+  echo "Loop devices are required. Run this container in privileged mode as root" >&2
+  echo "e.g. sudo podman compose up" >&2
+  exit 1
+fi
+
 # install packages needed to build and run an Arch VM
 # qemu now requires choosing a provider. "qemu-desktop" includes the SDL UI used
 # in this script and replaces the old "qemu"/"qemu-arch-extra" packages.

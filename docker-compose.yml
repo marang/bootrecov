@@ -1,4 +1,3 @@
-version: '3.9'
 services:
   bootrecov-test:
     image: archlinux:latest
