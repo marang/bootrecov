@@ -45,8 +45,8 @@ MNT=/mnt/archvm
 
 mkdir -p /vm
 
-# create 2G disk image quickly
-truncate -s 2G "$IMG"
+# create disk image (4G provides enough space for packages)
+truncate -s 4G "$IMG"
 
 # partition disk for UEFI
 parted -s "$IMG" mklabel gpt
