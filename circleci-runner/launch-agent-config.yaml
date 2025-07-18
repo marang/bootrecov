@@ -1,5 +1,0 @@
-api:
-  auth_token: YOUR_RUNNER_TOKEN
-runner:
-  name: grub-test-runner
-  working_directory: /home/circleci/runner
