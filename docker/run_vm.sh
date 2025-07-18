@@ -54,19 +54,31 @@ parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
 parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
-# create loop devices for each partition since some hosts disable loop
-# partition support. calculate offsets manually based on the known layout.
-boot_offset=$((1*1024*1024))     # 1MiB
-boot_size=$((511*1024*1024))     # up to 512MiB
-root_offset=$((512*1024*1024))   # rest of disk
-img_size=$(stat --printf=%s "$IMG")
-root_size=$((img_size - root_offset))
+# helper to wait for partition device nodes
+wait_for_partitions() {
+  local dev="$1"
+  for _ in $(seq 1 50); do
+    if [[ -e "${dev}p1" && -e "${dev}p2" ]]; then
+      return 0
+    fi
+    partprobe "$dev" >/dev/null 2>&1 || true
+    partx -u "$dev" >/dev/null 2>&1 || true
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle --timeout=1 --exit-if-exists="${dev}p2" >/dev/null 2>&1 || true
+    fi
+    sleep 0.1
+  done
+  return 1
+}
 
-boot_dev=$(losetup --find --show --offset "$boot_offset" --sizelimit "$boot_size" "$IMG")
-root_dev=$(losetup --find --show --offset "$root_offset" --sizelimit "$root_size" "$IMG")
-
-mkfs.fat -F32 "$boot_dev"
-mkfs.ext4 "$root_dev"
+# setup loop device and expose partitions
+device=$(losetup --find --show -P "$IMG")
+if ! wait_for_partitions "$device"; then
+    echo "Failed to create loop partitions for $device" >&2
+    exit 1
+fi
+mkfs.fat -F32 "${device}p1"
+mkfs.ext4 "${device}p2"
 
 mkdir -p "$MNT"
 mount "$root_dev" "$MNT"
@@ -95,20 +107,36 @@ losetup -d "$root_dev"
 
 # start the VM. Use ctrl-a x to exit QEMU if using -nographic
 # locate an OVMF firmware image. different distros install it to different
-# paths, so check a few common locations.
-OVMF_BIOS=""
-for p in \
-  /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
-  /usr/share/OVMF/OVMF_CODE.fd \
-  /usr/share/OVMF/OVMF_CODE_4M.fd \
-  /usr/share/qemu/OVMF_CODE.fd; do
-  if [[ -f "$p" ]]; then
-    OVMF_BIOS="$p"
-    break
-  fi
-done
+# paths, so check a few common locations. try installing the firmware if it's
+# missing.
+find_ovmf() {
+  for p in \
+    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
+    /usr/share/edk2/ovmf/OVMF_CODE.fd \
+    /usr/share/edk2/ovmf/x64/OVMF_CODE.fd \
+    /usr/share/OVMF/OVMF_CODE.fd \
+    /usr/share/OVMF/OVMF_CODE_4M.fd \
+    /usr/share/OVMF/OVMF.fd \
+    /usr/share/qemu/OVMF_CODE.fd \
+    /usr/share/qemu/OVMF.fd; do
+    [[ -f "$p" ]] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+OVMF_BIOS="$(find_ovmf || true)"
+
 if [[ -z "$OVMF_BIOS" ]]; then
-  echo "OVMF firmware not found" >&2
+  if command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm edk2-ovmf ovmf >/dev/null 2>&1 || true
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update >/dev/null 2>&1 && apt-get install -y ovmf >/dev/null 2>&1 || true
+  fi
+  OVMF_BIOS="$(find_ovmf || true)"
+fi
+
+if [[ -z "$OVMF_BIOS" ]]; then
+  echo "OVMF firmware not found. Install the 'edk2-ovmf' or 'ovmf' package." >&2
   exit 1
 fi
 
