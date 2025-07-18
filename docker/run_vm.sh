@@ -54,7 +54,6 @@ parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
 parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
-
 # set up a loop device for the whole disk image
 device=$(losetup --find --show "$IMG")
 
