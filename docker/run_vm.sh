@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+# ensure the loop driver supports partitions. some container hosts load it with
+# `max_part=0`, which prevents creation of loopXpY nodes. attempt to reload the
+# module with a reasonable partition count if possible.
+if [[ -f /sys/module/loop/parameters/max_part && "$(cat /sys/module/loop/parameters/max_part)" -eq 0 ]]; then
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe -r loop >/dev/null 2>&1 || true
+    modprobe loop max_part=8 >/dev/null 2>&1 || true
+  fi
+fi
+
 # ensure loop device nodes exist. some container runtimes don't provide them
 if [[ ! -e /dev/loop-control ]]; then
   modprobe loop 2>/dev/null || true
@@ -8,7 +18,7 @@ fi
 if [[ ! -e /dev/loop-control ]]; then
   mknod /dev/loop-control c 10 237
 fi
-for i in $(seq 0 7); do
+for i in $(seq 0 31); do
   [[ -e /dev/loop${i} ]] || mknod /dev/loop${i} b 7 ${i}
 done
 
@@ -35,14 +45,14 @@ MNT=/mnt/archvm
 
 mkdir -p /vm
 
-# create 2G disk image quickly
-truncate -s 2G "$IMG"
+# create larger disk image so pacstrap doesn't run out of space
+truncate -s 8G "$IMG"
 
 # partition disk for UEFI
 parted -s "$IMG" mklabel gpt
-parted -s "$IMG" mkpart ESP fat32 1MiB 256MiB
+parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
-parted -s "$IMG" mkpart primary ext4 256MiB 100%
+parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
 # helper to wait for partition device nodes
 wait_for_partitions() {
