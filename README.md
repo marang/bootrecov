@@ -59,10 +59,9 @@ All files for this test live under the `docker/` directory.
 
 ## Continuous Integration
 
-A GitHub Actions workflow in `.github/workflows/test.yml` runs `go test ./...`
+A GitHub Actions workflow in `.github/workflows/go-tests.yml` runs `go test ./...`
 to verify the project builds and tests pass.
 
-Another GitHub Actions workflow in `.github/workflows/vm-test.yml` can run the
-QEMU boot test automatically. It requires a self-hosted runner with Docker and
-KVM so the `docker compose` service can launch the VM.
+Run the Docker-based boot test manually with `docker compose up` on a machine
+that supports KVM.
 
