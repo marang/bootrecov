@@ -18,7 +18,7 @@ fi
 if [[ ! -e /dev/loop-control ]]; then
   mknod /dev/loop-control c 10 237
 fi
-for i in $(seq 0 7); do
+for i in $(seq 0 31); do
   [[ -e /dev/loop${i} ]] || mknod /dev/loop${i} b 7 ${i}
 done
 
