@@ -45,20 +45,20 @@ MNT=/mnt/archvm
 
 mkdir -p /vm
 
-# create disk image (4G provides enough space for packages)
-truncate -s 4G "$IMG"
+# create larger disk image so pacstrap doesn't run out of space
+truncate -s 8G "$IMG"
 
 # partition disk for UEFI
 parted -s "$IMG" mklabel gpt
-parted -s "$IMG" mkpart ESP fat32 1MiB 256MiB
+parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
-parted -s "$IMG" mkpart primary ext4 256MiB 100%
+parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
 # create loop devices for each partition since some hosts disable loop
 # partition support. calculate offsets manually based on the known layout.
 boot_offset=$((1*1024*1024))     # 1MiB
-boot_size=$((255*1024*1024))     # up to 256MiB
-root_offset=$((256*1024*1024))   # rest of disk
+boot_size=$((511*1024*1024))     # up to 512MiB
+root_offset=$((512*1024*1024))   # rest of disk
 img_size=$(stat --printf=%s "$IMG")
 root_size=$((img_size - root_offset))
 
