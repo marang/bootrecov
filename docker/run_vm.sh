@@ -22,7 +22,7 @@ fi
 # install packages needed to build and run an Arch VM
 # qemu now requires choosing a provider. "qemu-desktop" includes the SDL UI used
 # in this script and replaces the old "qemu"/"qemu-arch-extra" packages.
-pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted
+pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted dosfstools
 
 # build bootrecov binary
 cd /workspace/bootrecov
@@ -46,6 +46,13 @@ parted -s "$IMG" mkpart primary ext4 256MiB 100%
 
 # setup loop device and expose partitions
 device=$(losetup --find --show -P "$IMG")
+# ensure partition nodes are available when udev is not running
+partprobe "$device" || true
+# fallback when /dev/loop?p? nodes are missing
+if [[ ! -e "${device}p1" ]]; then
+    partx -u "$device"
+    sleep 1
+fi
 mkfs.fat -F32 "${device}p1"
 mkfs.ext4 "${device}p2"
 
