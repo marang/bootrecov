@@ -1,6 +1,16 @@
 #!/bin/bash
 set -euo pipefail
 
+# ensure the loop driver supports partitions. some container hosts load it with
+# `max_part=0`, which prevents creation of loopXpY nodes. attempt to reload the
+# module with a reasonable partition count if possible.
+if [[ -f /sys/module/loop/parameters/max_part && "$(cat /sys/module/loop/parameters/max_part)" -eq 0 ]]; then
+  if command -v modprobe >/dev/null 2>&1; then
+    modprobe -r loop >/dev/null 2>&1 || true
+    modprobe loop max_part=8 >/dev/null 2>&1 || true
+  fi
+fi
+
 # ensure loop device nodes exist. some container runtimes don't provide them
 if [[ ! -e /dev/loop-control ]]; then
   modprobe loop 2>/dev/null || true
