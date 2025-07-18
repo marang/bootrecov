@@ -22,7 +22,7 @@ fi
 # install packages needed to build and run an Arch VM
 # qemu now requires choosing a provider. "qemu-desktop" includes the SDL UI used
 # in this script and replaces the old "qemu"/"qemu-arch-extra" packages.
-pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted
+pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted dosfstools
 
 # build bootrecov binary
 cd /workspace/bootrecov
@@ -44,8 +44,29 @@ parted -s "$IMG" mkpart ESP fat32 1MiB 256MiB
 parted -s "$IMG" set 1 esp on
 parted -s "$IMG" mkpart primary ext4 256MiB 100%
 
+# helper to wait for partition device nodes
+wait_for_partitions() {
+  local dev="$1"
+  for _ in $(seq 1 50); do
+    if [[ -e "${dev}p1" && -e "${dev}p2" ]]; then
+      return 0
+    fi
+    partprobe "$dev" >/dev/null 2>&1 || true
+    partx -u "$dev" >/dev/null 2>&1 || true
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle --timeout=1 --exit-if-exists="${dev}p2" >/dev/null 2>&1 || true
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
 # setup loop device and expose partitions
 device=$(losetup --find --show -P "$IMG")
+if ! wait_for_partitions "$device"; then
+    echo "Failed to create loop partitions for $device" >&2
+    exit 1
+fi
 mkfs.fat -F32 "${device}p1"
 mkfs.ext4 "${device}p2"
 
@@ -77,3 +98,4 @@ qemu-system-x86_64 \
   -drive file="$IMG",format=raw,if=virtio \
   -bios /usr/share/edk2-ovmf/x64/OVMF_CODE.fd \
   -display sdl
+
