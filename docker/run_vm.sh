@@ -93,9 +93,9 @@ mkfs.fat -F32 "${device}p1"
 mkfs.ext4 "${device}p2"
 
 mkdir -p "$MNT"
-mount "${device}p2" "$MNT"
+mount "$root_dev" "$MNT"
 mkdir -p "$MNT/boot"
-mount "${device}p1" "$MNT/boot"
+mount "$boot_dev" "$MNT/boot"
 
 # install minimal Arch system
 pacstrap "$MNT" base linux linux-firmware grub efibootmgr sudo
