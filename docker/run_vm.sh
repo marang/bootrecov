@@ -111,40 +111,28 @@ device=""
 # paths, so check a few common locations. try installing the firmware if it's
 # missing.
 find_ovmf() {
-  local dirs=(
-    /usr/share/edk2-ovmf
-    /usr/share/edk2/ovmf
-    /usr/share/edk2
-    /usr/share/OVMF
-    /usr/share/ovmf
-    /usr/share/qemu
+  local candidates=(
+    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd
+    /usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd
+    /usr/share/edk2/ovmf/OVMF_CODE.fd
+    /usr/share/edk2/ovmf/OVMF_CODE.4m.fd
+    /usr/share/edk2/x64/OVMF_CODE.fd
+    /usr/share/edk2/x64/OVMF_CODE.4m.fd
+    /usr/share/OVMF/OVMF_CODE.fd
+    /usr/share/OVMF/OVMF_CODE.4m.fd
+    /usr/share/ovmf/OVMF_CODE.fd
+    /usr/share/ovmf/OVMF_CODE.4m.fd
+    /usr/share/qemu/OVMF_CODE.fd
+    /usr/share/qemu/OVMF_CODE.4m.fd
   )
-  # prefer x64 firmware if available
-  for dir in "${dirs[@]}"; do
-    [[ -d "$dir" ]] || continue
-    local f
-    f=$(find "$dir" -maxdepth 2 \
-      \( -path '*x64*' -o -path '*X64*' \) \
-      \( -iname 'OVMF_CODE*.fd' -o -iname 'ovmf_code*.bin' \) \
-      -print -quit 2>/dev/null)
-    if [[ -n "$f" ]]; then
+  for f in "${candidates[@]}"; do
+    if [[ -f "$f" ]]; then
       echo "$f"
       return 0
     fi
   done
-  # fallback: any architecture
-  for dir in "${dirs[@]}"; do
-    [[ -d "$dir" ]] || continue
-    local f
-    f=$(find "$dir" -maxdepth 2 \
-      \( -iname 'OVMF_CODE*.fd' -o -iname 'ovmf_code*.bin' \) \
-      -print -quit 2>/dev/null)
-    if [[ -n "$f" ]]; then
-      echo "$f"
-      return 0
-    fi
-  done
-  return 1
+  # last resort: search the entire /usr/share tree
+  find /usr/share -path '*ovmf*' \( -iname 'OVMF_CODE*.fd' -o -iname 'ovmf_code*.bin' \) -print -quit 2>/dev/null
 }
 
 OVMF_BIOS="$(find_ovmf || true)"
