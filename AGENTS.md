@@ -98,3 +98,27 @@ go run .
 - [x] Indicate if GRUB entry exists for each backup
 - [x] Generate/Remove GRUB entry from UI selection
 
+
+---
+
+## Contributor Guidelines
+These instructions apply to both human contributors and Codex agents.
+
+### Development Practices
+- Format all Go files with `gofmt -w` before committing.
+- Run `go vet ./...` to catch common issues.
+- Before starting new work, update your branch with the latest `main` changes using `git pull origin main`.
+
+### Running Tests
+- Execute `go test ./...` for unit tests.
+- A full boot test is available via `docker compose up` under `docker/`.
+  - **Do not run** this test in GitHub Actions or automated agent workflows; it requires KVM/QEMU and must be executed manually on a compatible machine.
+
+### Pull Requests
+- Use clear, present-tense commit messages (e.g., `Add GRUB entry removal`).
+- Ensure `go test ./...` passes before opening a PR.
+
+### Repository Structure
+- `tui/` contains the Bubbletea models and views.
+- `docker/` hosts the boot testing scripts and Compose file.
+- `main.go` is the CLI entry point.
