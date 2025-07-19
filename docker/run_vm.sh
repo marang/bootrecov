@@ -111,14 +111,20 @@ device=""
 # paths, so check a few common locations. try installing the firmware if it's
 # missing.
 find_ovmf() {
-  for dir in \
-    /usr/share/edk2-ovmf \
-    /usr/share/edk2/ovmf \
-    /usr/share/OVMF \
-    /usr/share/qemu; do
+  local dirs=(
+    /usr/share/edk2-ovmf
+    /usr/share/edk2/ovmf
+    /usr/share/edk2
+    /usr/share/OVMF
+    /usr/share/ovmf
+    /usr/share/qemu
+  )
+  for dir in "${dirs[@]}"; do
     [[ -d "$dir" ]] || continue
     local f
-    f=$(find "$dir" -maxdepth 2 -name 'OVMF_CODE*.fd' -print -quit 2>/dev/null)
+    f=$(find "$dir" -maxdepth 2 \
+      \( -iname 'OVMF_CODE*.fd' -o -iname 'ovmf_code*.bin' \) \
+      -print -quit 2>/dev/null)
     if [[ -n "$f" ]]; then
       echo "$f"
       return 0
