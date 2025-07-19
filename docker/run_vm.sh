@@ -119,6 +119,20 @@ find_ovmf() {
     /usr/share/ovmf
     /usr/share/qemu
   )
+  # prefer x64 firmware if available
+  for dir in "${dirs[@]}"; do
+    [[ -d "$dir" ]] || continue
+    local f
+    f=$(find "$dir" -maxdepth 2 \
+      \( -path '*x64*' -o -path '*X64*' \) \
+      \( -iname 'OVMF_CODE*.fd' -o -iname 'ovmf_code*.bin' \) \
+      -print -quit 2>/dev/null)
+    if [[ -n "$f" ]]; then
+      echo "$f"
+      return 0
+    fi
+  done
+  # fallback: any architecture
   for dir in "${dirs[@]}"; do
     [[ -d "$dir" ]] || continue
     local f
