@@ -107,6 +107,7 @@ These instructions apply to both human contributors and Codex agents.
 ### Development Practices
 - Format all Go files with `gofmt -w` before committing.
 - Run `go vet ./...` to catch common issues.
+- Before starting new work, update your branch with the latest `main` changes using `git pull origin main`.
 
 ### Running Tests
 - Execute `go test ./...` for unit tests.
