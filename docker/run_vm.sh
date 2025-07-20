@@ -112,18 +112,11 @@ device=""
 # missing.
 find_ovmf() {
   local candidates=(
-    /usr/share/edk2-ovmf/x64/OVMF_CODE.fd
-    /usr/share/edk2-ovmf/x64/OVMF_CODE.4m.fd
-    /usr/share/edk2/ovmf/OVMF_CODE.fd
-    /usr/share/edk2/ovmf/OVMF_CODE.4m.fd
-    /usr/share/edk2/x64/OVMF_CODE.fd
     /usr/share/edk2/x64/OVMF_CODE.4m.fd
+    /usr/share/edk2/x64/OVMF_CODE.fd
     /usr/share/OVMF/OVMF_CODE.fd
-    /usr/share/OVMF/OVMF_CODE.4m.fd
     /usr/share/ovmf/OVMF_CODE.fd
-    /usr/share/ovmf/OVMF_CODE.4m.fd
     /usr/share/qemu/OVMF_CODE.fd
-    /usr/share/qemu/OVMF_CODE.4m.fd
   )
   for f in "${candidates[@]}"; do
     if [[ -f "$f" ]]; then
@@ -132,7 +125,7 @@ find_ovmf() {
     fi
   done
   # last resort: search the entire /usr/share tree
-  find /usr/share -path '*ovmf*' \( -iname 'OVMF_CODE*.fd' -o -iname 'ovmf_code*.bin' \) -print -quit 2>/dev/null
+  find /usr/share -type f -iname 'OVMF_CODE*.fd' -print -quit 2>/dev/null
 }
 
 OVMF_BIOS="$(find_ovmf || true)"
@@ -151,9 +144,11 @@ if [[ -z "$OVMF_BIOS" ]]; then
   exit 1
 fi
 
+echo "Using OVMF firmware at $OVMF_BIOS"
+
 qemu-system-x86_64 \
   -m 1024 \
   -drive file="$IMG",format=raw,if=virtio \
-  -bios "$OVMF_BIOS" \
+  -drive if=pflash,format=raw,unit=0,readonly=on,file="$OVMF_BIOS" \
   -display sdl
 
