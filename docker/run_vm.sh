@@ -54,7 +54,6 @@ parted -s "$IMG" mkpart ESP fat32 1MiB 512MiB
 parted -s "$IMG" set 1 esp on
 parted -s "$IMG" mkpart primary ext4 512MiB 100%
 
-
 # set up a loop device for the whole disk image
 device=$(losetup --find --show "$IMG")
 
@@ -130,6 +129,15 @@ find_ovmf() {
 }
 
 OVMF_BIOS="$(find_ovmf || true)"
+
+if [[ -z "$OVMF_BIOS" ]]; then
+  if command -v pacman >/dev/null 2>&1; then
+    pacman -Sy --noconfirm edk2-ovmf ovmf >/dev/null 2>&1 || true
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update >/dev/null 2>&1 && apt-get install -y ovmf >/dev/null 2>&1 || true
+  fi
+  OVMF_BIOS="$(find_ovmf || true)"
+fi
 
 if [[ -z "$OVMF_BIOS" ]]; then
   echo "OVMF firmware not found. Install the 'edk2-ovmf' or 'ovmf' package." >&2
