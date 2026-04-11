@@ -1,6 +1,6 @@
 # bootrecov
 
-`bootrecov` is a Go TUI for managing recovery snapshots of `/boot` and wiring selected snapshots into GRUB as bootable fallback entries.
+`bootrecov` is a Go CLI and TUI for managing recovery snapshots of `/boot` and wiring selected snapshots into GRUB as bootable fallback entries.
 
 The current design keeps two separate copies:
 
@@ -13,6 +13,7 @@ Inactive snapshots stay in the snapshot store only. Activating a snapshot copies
 
 - Creates timestamped snapshots of `/boot`
 - Detects kernel, initramfs, microcode images, size, and backup time
+- Exposes a Cobra CLI for backup, GRUB, hook, and reconcile workflows
 - Shows snapshots and GRUB entries in a Bubble Tea interface
 - Activates or deactivates snapshots for EFI + GRUB boot recovery
 - Installs a pacman pre-transaction hook that can trigger `bootrecov backup-now`
@@ -27,10 +28,9 @@ Inactive snapshots stay in the snapshot store only. Activating a snapshot copies
 
 Implemented today:
 
-- Interactive TUI only; no dedicated CLI subcommands yet
+- Cobra-based CLI plus interactive TUI
 - GRUB custom entry management through `/etc/grub.d/41_bootrecov_snapshots`
 - Snapshot copy profiles: `full` and `minimal`
-- Non-interactive helper commands for snapshot creation, hook install, and recovery command output
 - Rootless QEMU integration test harness under `test/bootvm/`
 - GitHub release and AUR publish workflows for tagged releases
 
@@ -51,7 +51,7 @@ Runtime requirements:
 
 Build requirements:
 
-- Go `1.24+`
+- Go `1.25+`
 
 Notes:
 
@@ -84,7 +84,22 @@ Or run the built binary:
 
 The entry point is [`cmd/bootrecov/main.go`](cmd/bootrecov/main.go).
 
-Helper commands:
+CLI examples:
+
+```bash
+bootrecov tui
+bootrecov backup list
+bootrecov backup create
+bootrecov backup activate <snapshot-name>
+bootrecov backup deactivate <snapshot-name>
+bootrecov backup delete <snapshot-name>
+bootrecov backup recovery <snapshot-name>
+bootrecov grub list
+bootrecov reconcile
+bootrecov hook install
+```
+
+Compatibility aliases retained for automation:
 
 ```bash
 bootrecov backup-now

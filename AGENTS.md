@@ -13,7 +13,7 @@ The project is aimed at system engineers and advanced Linux users who want:
 - inspectable recovery snapshots outside of full system rollback tools
 - explicit GRUB integration instead of opaque recovery automation
 
-The current application is primarily a TUI, with a few small non-interactive helper commands for automation.
+The current application exposes both a Cobra CLI and a Bubble Tea TUI.
 
 ## Current Architecture
 
@@ -33,6 +33,7 @@ Important behavior:
 
 ## Implemented Features
 
+- Cobra CLI for backup, GRUB, hook, reconcile, and TUI entrypoints
 - TUI backup browser using Bubble Tea and Lip Gloss
 - Backup discovery, metadata inspection, and completeness checks
 - Snapshot creation from `/boot`
@@ -50,12 +51,22 @@ The binary currently supports:
 
 - `bootrecov`
   Starts the TUI.
-- `bootrecov backup-now`
-  Creates a snapshot immediately and prints its name.
-- `bootrecov install-pacman-hook [absolute-binary-path]`
+- `bootrecov tui`
+  Starts the TUI explicitly.
+- `bootrecov backup list|create|activate|deactivate|delete|recovery`
+  Manages snapshots from the CLI.
+- `bootrecov grub list`
+  Lists Bootrecov GRUB entries.
+- `bootrecov reconcile`
+  Reconciles EFI mirrors and GRUB state.
+- `bootrecov hook install [absolute-binary-path]`
   Installs or refreshes the pacman hook.
+
+Compatibility aliases retained:
+
+- `bootrecov backup-now`
+- `bootrecov install-pacman-hook [absolute-binary-path]`
 - `bootrecov recovery-commands <snapshot-name>`
-  Prints GRUB rescue-style commands for an activated snapshot.
 
 These commands are implemented in [`cmd/bootrecov/main.go`](cmd/bootrecov/main.go).
 
@@ -186,6 +197,24 @@ Release targets are Linux-only:
 
 - `linux/amd64`
 - `linux/arm64`
+
+## Release Discipline
+
+Before creating a release tag:
+
+- ensure the working tree is clean
+- ensure release-critical files are actually tracked by git, not just present in the working tree
+- verify the CLI entrypoint exists in git history where expected
+- run `go test ./...`
+- run `go vet ./...`
+- confirm the release configuration matches the current repository layout
+
+Do not:
+
+- cut tags from a dirty tree
+- mix release fixes with unrelated roadmap or documentation work right before tagging
+- assume a local successful build proves the tagged git tree is complete
+- reintroduce ignore rules that can hide tracked source directories such as `cmd/bootrecov/`
 
 ## Repository Structure
 
