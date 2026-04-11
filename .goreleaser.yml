@@ -20,7 +20,7 @@ builds:
 
 archives:
   - id: default
-    builds:
+    ids:
       - bootrecov
     formats:
       - tar.gz

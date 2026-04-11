@@ -35,5 +35,8 @@ go.work.sum
 bin/
 dist/
 bootrecov
+!cmd/
+!cmd/bootrecov/
+!cmd/bootrecov/main.go
 .codex
 test/bootvm/work/
