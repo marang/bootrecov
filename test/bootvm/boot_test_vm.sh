@@ -16,10 +16,10 @@ if [[ ! -e /dev/loop-control ]]; then
   modprobe loop 2>/dev/null || true
 fi
 if [[ ! -e /dev/loop-control ]]; then
-  mknod /dev/loop-control c 10 237
+  mknod /dev/loop-control c 10 237 2>/dev/null || true
 fi
 for i in $(seq 0 31); do
-  [[ -e /dev/loop${i} ]] || mknod /dev/loop${i} b 7 ${i}
+  [[ -e /dev/loop${i} ]] || mknod /dev/loop${i} b 7 ${i} 2>/dev/null || true
 done
 
 # fail early if loop devices remain inaccessible (common with rootless Podman)
@@ -32,12 +32,12 @@ fi
 # install packages needed to build and run an Arch VM
 # qemu now requires choosing a provider. "qemu-desktop" includes the SDL UI used
 # in this script and replaces the old "qemu"/"qemu-arch-extra" packages.
-pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git parted dosfstools
+pacman -Sy --noconfirm qemu-desktop arch-install-scripts grub efibootmgr edk2-ovmf go git make parted dosfstools
 
 # build bootrecov binary
 cd /workspace/bootrecov
-if [ ! -f bootrecov ]; then
-    go build -o bootrecov
+if [[ ! -x bin/bootrecov ]]; then
+    make build
 fi
 
 IMG=/vm/archvm.img
@@ -90,7 +90,7 @@ mount "$boot_loop" "$MNT/boot"
 pacstrap "$MNT" base linux linux-firmware grub efibootmgr sudo
 
 # copy bootrecov binary into VM
-install -Dm755 ./bootrecov "$MNT/usr/local/bin/bootrecov"
+install -Dm755 ./bin/bootrecov "$MNT/usr/local/bin/bootrecov"
 
 # install grub
 arch-chroot "$MNT" grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=GRUB
@@ -156,4 +156,3 @@ qemu-system-x86_64 \
   -drive file="$IMG",format=raw,if=virtio \
   -bios "$OVMF_BIOS" \
   -display sdl
-

@@ -2,7 +2,8 @@ services:
   bootrecov-test:
     image: archlinux:latest
     privileged: true
+    network_mode: host
     volumes:
       - .:/workspace/bootrecov
     working_dir: /workspace/bootrecov
-    command: bash docker/run_vm.sh
+    command: bash test/bootvm/boot_test_vm.sh

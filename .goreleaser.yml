@@ -1,0 +1,33 @@
+version: 2
+
+project_name: bootrecov
+
+before:
+  hooks:
+    - go test ./...
+
+builds:
+  - id: bootrecov
+    main: ./cmd/bootrecov
+    binary: bootrecov
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: default
+    builds:
+      - bootrecov
+    formats:
+      - tar.gz
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: git

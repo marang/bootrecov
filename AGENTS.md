@@ -1,124 +1,220 @@
-# Bootrecov Project Specification (Codex)
+# Bootrecov Project Specification
+
+This file is the working project contract for contributors and coding agents operating in this repository.
+It should describe the repo as it exists now, not as it existed during migration.
 
 ## Overview
-Bootrecov is a Go-based CLI and TUI application designed for Linux system engineers and power users who want reliable, inspectable boot recovery options when a system update breaks kernel or boot loader configurations.
 
-The project was originally implemented as a Bash script to:
-- Backup `/boot` to both `/var/backups/boot-snapshots` and `/boot/efi/boot-backups`
-- Register a pacman hook to trigger backups before kernel/GRUB updates
-- Generate GRUB entries pointing to these backups for manual boot recovery
+`bootrecov` is a Linux-only Go utility for managing recovery snapshots of `/boot` and activating selected snapshots as GRUB fallback entries.
 
-Now being migrated to Go with Bubbletea for a full-featured interactive terminal interface.
+The project is aimed at system engineers and advanced Linux users who want:
 
----
+- bootable fallback entries for previous `/boot` states
+- inspectable recovery snapshots outside of full system rollback tools
+- explicit GRUB integration instead of opaque recovery automation
 
-## Key Goals
-- Allow users to safely **boot into a previous /boot state**
-- Enable full inspection of broken `/boot` while booted from a backup
-- Provide a TUI for browsing, validating, and managing boot backups
-- Support GRUB custom menu entry generation and removal
-- Keep recovery and diagnostics decoupled from full rollback tools (e.g., snapper)
+The current application is primarily a TUI, with a few small non-interactive helper commands for automation.
 
----
+## Current Architecture
 
-## Current System Architecture
+Bootrecov keeps two related storage locations:
 
-### Bash Script (legacy)
-- `/usr/local/bin/snap_and_backup_boot`: Main entry
-- Creates timestamped copies of `/boot` in two locations
-- Pacman hook at `/etc/pacman.d/hooks/boot-backup.hook`
-- EFI recovery GRUB entries generated in `/etc/grub.d/41_custom_boot_backups`
+- snapshot source: `/var/backups/bootrecov-snapshots/<name>`
+- optional EFI mirror for activated snapshots: `/boot/efi/bootrecov-snapshots/<name>`
 
----
+Important behavior:
 
-## Go Application (bootrecov)
+- new snapshots are created only in the snapshot source directory
+- EFI mirrors exist only for activated GRUB entries
+- GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
+- GRUB config is regenerated with `grub-mkconfig -o /boot/grub/grub.cfg` after GRUB entry changes
+- reconcile removes inactive EFI mirrors
+- reconcile preserves an already-bootable GRUB entry if refresh of its active EFI mirror fails transiently
 
-### Features to implement:
+## Implemented Features
 
-#### ✅ Backup Listing
-- List backups from:
-  - `/var/backups/boot-snapshots/*`
-  - `/boot/efi/boot-backups/*`
-- Show creation time, completeness (kernel/initramfs present)
+- TUI backup browser using Bubble Tea and Lip Gloss
+- Backup discovery, metadata inspection, and completeness checks
+- Snapshot creation from `/boot`
+- EFI mirror activation and deactivation
+- GRUB entry add, remove, and parse
+- Recovery command generation for activated snapshots
+- Pacman hook installation for pre-transaction snapshots
+- Rootless QEMU integration test harness under `test/bootvm/`
+- Tagged release workflow via GoReleaser
+- Tagged AUR publish workflow using `PKGBUILD`
 
-#### ✅ GRUB Entry Management
-- Parse `/etc/grub.d/41_custom_boot_backups`
- - Safely append/remove entries for backups
- - Ensure the custom file is a Bash script using `cat <<'EOF'` blocks
- - Ensure entries are never overwritten by default `grub-mkconfig`
+## Non-Interactive Commands
 
-#### ✅ TUI (Bubbletea)
-- Navigate backup list interactively
-- Display GRUB boot entry status
-- View existing GRUB entries and remove them
-- Flag backups with missing files (e.g. missing `initramfs-linux.img`)
-- Mark backups already listed in GRUB
-- Use Lip Gloss for a styled interface
+The binary currently supports:
 
-#### ✅ Manual Recovery Hints
-- Generate boot commands for GRUB rescue shell
-- Show `linux`, `initrd`, and `search` commands per backup
+- `bootrecov`
+  Starts the TUI.
+- `bootrecov backup-now`
+  Creates a snapshot immediately and prints its name.
+- `bootrecov install-pacman-hook [absolute-binary-path]`
+  Installs or refreshes the pacman hook.
+- `bootrecov recovery-commands <snapshot-name>`
+  Prints GRUB rescue-style commands for an activated snapshot.
 
-#### 🔜 Future Ideas
-- Integrate optional mount + chroot to debug broken `/boot`
-- Add support for auto-pruning old backups
-- Detect failed boots via journald or `last -x reboot`
-- Export to USB boot media
+These commands are implemented in [`cmd/bootrecov/main.go`](cmd/bootrecov/main.go).
 
----
+## TUI Controls
 
-## Tech Stack
-- Language: Go (>=1.20)
-- UI: Bubbletea + Lipgloss + Bubbles
-- Filesystem: os, filepath, ioutil, text/template
-- No Snapper, no DBus
+Backups view:
 
----
+- `b`: create snapshot
+- `g`: toggle EFI + GRUB activation
+- `s`: reconcile EFI mirrors and GRUB state
+- `r`: show GRUB recovery commands for selected backup
+- `p`: install pacman hook
+- `d`: delete selected backup, with confirmation
+- `tab`: switch to GRUB entries
+- `q`: quit
 
-## GitHub
-**Repo:** `git@github.com:marang/bootrecov.git`
+GRUB entries view:
 
-## License
-**MIT License** — permissive, simple, aligns with Go CLI and Bubbletea ecosystem.
+- `x`: remove selected GRUB entry
+- `tab`: switch back to backups
+- `q`: quit
 
-## Installation (Development)
+## Dependency Model
+
+Runtime assumptions:
+
+- Linux
+- GRUB
+- EFI system layout
+- `rclone`
+- `grub-mkconfig`
+
+The TUI performs a startup dependency check and exits early with a clear error if required runtime tools are missing.
+
+Normal operation typically requires elevated privileges because the app writes to:
+
+- `/var/backups/bootrecov-snapshots`
+- `/boot/efi/bootrecov-snapshots`
+- `/etc/grub.d/41_bootrecov_snapshots`
+- `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
+
+## Backup Profiles
+
+Environment variable:
+
+- `BOOTRECOV_BACKUP_PROFILE=full`
+- `BOOTRECOV_BACKUP_PROFILE=minimal`
+
+`full` copies the full `/boot` tree while excluding recursive backup destinations.
+
+`minimal` currently includes:
+
+- `vmlinuz*`
+- `initrd.img*`
+- `initramfs*.img`
+- `intel-ucode.img`
+- `amd-ucode.img`
+- `grub/**`
+
+## Pacman Hook
+
+Installed hook path:
+
+- `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
+
+Current trigger set:
+
+- `linux*`
+- `grub`
+- `mkinitcpio`
+- `systemd`
+
+Current action:
+
+- run `bootrecov backup-now` before the transaction
+
+## Current Non-Goals
+
+These are not implemented and should not be described as current behavior:
+
+- automatic pruning of old snapshots
+- chroot or repair-shell workflows
+- boot failure detection from journald or reboot history
+- non-Linux support
+- release artifacts for `darwin` or `windows`
+
+## Build, Test, And Release
+
+Build and local execution:
+
 ```bash
-git clone git@github.com:marang/bootrecov.git
-cd bootrecov
-go mod init github.com/marang/bootrecov
-go get github.com/charmbracelet/bubbletea
-go run .
+make build
+make run
 ```
 
----
+Formatting and validation:
 
-## Next Milestone
-- [x] Scaffold `tui/model.go` and `tui/view.go`
-- [x] Display list of EFI backups with kernel/initramfs check
-- [x] Indicate if GRUB entry exists for each backup
-- [x] Generate/Remove GRUB entry from UI selection
+```bash
+make fmt
+go vet ./...
+go test ./...
+make test
+```
 
+Rootless integration test:
 
----
+```bash
+make test-bootvm-requirements
+make test-bootvm
+make test-bootvm-watch
+```
 
-## Contributor Guidelines
-These instructions apply to both human contributors and Codex agents.
+CI:
 
-### Development Practices
-- Format all Go files with `gofmt -w` before committing.
-- Run `go vet ./...` to catch common issues.
-- Before starting new work, update your branch with the latest `main` changes using `git pull origin main`.
+- [`.github/workflows/go-tests.yml`](.github/workflows/go-tests.yml) runs `go test ./...`
 
-### Running Tests
-- Execute `go test ./...` for unit tests.
-- A full boot test is available via `docker compose up` under `docker/`.
-  - **Do not run** this test in GitHub Actions or automated agent workflows; it requires KVM/QEMU and must be executed manually on a compatible machine.
+Release automation:
 
-### Pull Requests
-- Use clear, present-tense commit messages (e.g., `Add GRUB entry removal`).
-- Ensure `go test ./...` passes before opening a PR.
+- [`.github/workflows/release.yml`](.github/workflows/release.yml)
+- [`.goreleaser.yml`](.goreleaser.yml)
 
-### Repository Structure
-- `tui/` contains the Bubbletea models and views.
-- `docker/` hosts the boot testing scripts and Compose file.
-- `main.go` is the CLI entry point.
+AUR automation:
+
+- [`.github/workflows/aur.yml`](.github/workflows/aur.yml)
+- [`PKGBUILD`](PKGBUILD)
+
+Release targets are Linux-only:
+
+- `linux/amd64`
+- `linux/arm64`
+
+## Repository Structure
+
+- `cmd/bootrecov/main.go`
+  CLI entry point and non-interactive command dispatch
+- `internal/tui/backups.go`
+  backup discovery, copy logic, EFI sync, GRUB integration, hook generation
+- `internal/tui/model.go`
+  Bubble Tea model, key handling, status flow
+- `internal/tui/view.go`
+  view helper placeholder
+- `test/bootvm/`
+  rootless QEMU integration harness and related scripts
+- `docker-compose.yml`
+  legacy privileged/container-based boot test path kept for reference
+
+## Contributor Expectations
+
+- Keep `README.md` and `AGENTS.md` aligned with actual repo behavior.
+- Prefer updating tests together with behavior changes.
+- Do not describe future ideas as current features.
+- Treat GRUB entry safety and recovery availability as high-priority correctness concerns.
+- Preserve Linux-only assumptions unless the repo is explicitly redesigned.
+- Before opening a PR, ensure `go test ./...` passes at minimum.
+
+## License
+
+License: MIT
+
+Current repo license file:
+
+- [`LICENSE`](LICENSE)
