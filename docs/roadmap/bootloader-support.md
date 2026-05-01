@@ -20,7 +20,7 @@ Implementation direction:
 Exit criteria:
 
 - Existing Arch GRUB VM gate stays green.
-- Ubuntu/Debian GRUB VM gate is added before declaring those distros fully supported.
+- Ubuntu/Debian GRUB VM gates pass before declaring those distros fully supported.
 
 ## Priority 2: systemd-boot
 

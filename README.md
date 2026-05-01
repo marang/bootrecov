@@ -95,8 +95,8 @@ Normal operation usually requires root because Bootrecov writes to:
 | --- | --- | --- |
 | Arch Linux | Supported for Linux + EFI + GRUB systems | pacman hook supported |
 | Arch-based distributions | Expected to work when their `/etc/os-release` and GRUB/EFI layout match Arch conventions | pacman hook supported when pacman hook paths are present |
-| Ubuntu | Supported for Linux + EFI + GRUB layouts | apt/dpkg hook planned, not implemented |
-| Debian | Supported for Linux + EFI + GRUB layouts | apt/dpkg hook planned, not implemented |
+| Ubuntu | GRUB + EFI gate available with `make test-bootvm-ubuntu-grub` | apt/dpkg hook planned, not implemented |
+| Debian | GRUB + EFI gate available with `make test-bootvm-debian-grub` | apt/dpkg hook planned, not implemented |
 | Other Linux distributions | Experimental via detection and environment overrides | not implemented |
 
 ### Bootloader Support
@@ -415,6 +415,14 @@ Run once:
 make test-bootvm
 ```
 
+Explicit GRUB platform gates:
+
+```bash
+make test-bootvm-ubuntu-grub
+make test-bootvm-debian-grub
+make test-bootvm-grub-matrix
+```
+
 Run with a tmux watch UI:
 
 ```bash
@@ -454,6 +462,8 @@ sudo pacman -S --needed qemu-base edk2-ovmf openssh curl cloud-image-utils socat
 The VM test currently verifies:
 
 - dependency preflight
+- expected platform and GRUB backend detection through `bootrecov doctor`
+- unsupported apt/dpkg hook installation refusal on Ubuntu/Debian
 - snapshot creation
 - SquashFS module archive creation
 - EFI mirror creation without leaking `.bootrecov` metadata
@@ -518,6 +528,9 @@ Useful targets:
 - `make fmt`: run `gofmt`
 - `make test`: run vet, tests, race tests, and coverage
 - `make test-bootvm`: run the rootless VM integration test
+- `make test-bootvm-ubuntu-grub`: run the explicit Ubuntu + GRUB VM gate
+- `make test-bootvm-debian-grub`: run the explicit Debian + GRUB VM gate
+- `make test-bootvm-grub-matrix`: run both Ubuntu + GRUB and Debian + GRUB gates
 - `make test-bootvm-watch`: run the VM test in tmux watch mode
 - `make clean`: remove build artifacts
 

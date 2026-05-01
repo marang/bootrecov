@@ -213,6 +213,9 @@ Rootless integration test:
 ```bash
 make test-bootvm-requirements
 make test-bootvm
+make test-bootvm-ubuntu-grub
+make test-bootvm-debian-grub
+make test-bootvm-grub-matrix
 make test-bootvm-watch
 ```
 

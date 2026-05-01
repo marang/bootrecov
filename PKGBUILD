@@ -11,18 +11,30 @@ makedepends=('go')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
+_make_go_modcache_writable() {
+  if [[ -n "${GOMODCACHE:-}" && -d "${GOMODCACHE}" ]]; then
+    chmod -R u+w "${GOMODCACHE}" 2>/dev/null || true
+  fi
+}
+
 prepare() {
   cd "${srcdir}/${pkgname}-${pkgver}"
   export GOPATH="${srcdir}/gopath"
   export GOMODCACHE="${GOPATH}/pkg/mod"
+  export GOFLAGS="-modcacherw"
+  trap _make_go_modcache_writable EXIT
   go mod download
+  _make_go_modcache_writable
 }
 
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
   export GOPATH="${srcdir}/gopath"
   export GOMODCACHE="${GOPATH}/pkg/mod"
+  export GOFLAGS="-modcacherw"
+  trap _make_go_modcache_writable EXIT
   go build -trimpath -mod=readonly -ldflags "-s -w" -o bootrecov ./cmd/bootrecov
+  _make_go_modcache_writable
 }
 
 package() {

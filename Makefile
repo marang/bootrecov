@@ -5,7 +5,7 @@ GO_CACHE_DIR ?= /tmp/bootrecov-go-cache
 GO_MOD_CACHE_DIR ?= /tmp/bootrecov-go-mod-cache
 GO_ENV := GOCACHE=$(GO_CACHE_DIR) GOMODCACHE=$(GO_MOD_CACHE_DIR)
 
-.PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-watch
+.PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-ubuntu-grub test-bootvm-debian-grub test-bootvm-grub-matrix test-bootvm-watch
 
 help:
 	@echo "Targets:"
@@ -16,7 +16,10 @@ help:
 	@echo "  make clean                Remove build artifacts"
 	@echo "  make test-bootvm-requirements Check host requirements for rootless VM test"
 	@echo "  make test-bootvm-prepare  Pre-cache VM assets (optional; test-bootvm auto-runs this when needed)"
-	@echo "  make test-bootvm          Run rootless QEMU boot test (auto-prepare + guest smoke test)"
+	@echo "  make test-bootvm          Run rootless QEMU Ubuntu+GRUB boot test (auto-prepare + guest smoke test)"
+	@echo "  make test-bootvm-ubuntu-grub Run explicit Ubuntu+GRUB VM gate"
+	@echo "  make test-bootvm-debian-grub Run explicit Debian+GRUB VM gate"
+	@echo "  make test-bootvm-grub-matrix Run Ubuntu+GRUB and Debian+GRUB VM gates"
 	@echo "  make test-bootvm-watch    Run tests, then open tmux dashboard for QEMU boot test"
 
 build:
@@ -46,6 +49,14 @@ test-bootvm-prepare: test-bootvm-requirements
 
 test-bootvm: test-bootvm-requirements
 	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh
+
+test-bootvm-ubuntu-grub: test-bootvm-requirements
+	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario ubuntu-grub
+
+test-bootvm-debian-grub: test-bootvm-requirements
+	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario debian-grub
+
+test-bootvm-grub-matrix: test-bootvm-ubuntu-grub test-bootvm-debian-grub
 
 test-bootvm-watch: test
 	$(GO_ENV) bash test/bootvm/watch_tmux.sh

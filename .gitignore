@@ -40,3 +40,4 @@ bootrecov
 !cmd/bootrecov/main.go
 .codex
 test/bootvm/work/
+test/bootvm/work-*/

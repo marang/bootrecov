@@ -7,6 +7,7 @@ Every release must pass:
 - clean git tree before tagging
 - `make test`
 - `make test-bootvm`
+- `make test-bootvm-grub-matrix` before promoting Ubuntu/Debian GRUB support or changing platform/bootloader detection
 - README, SAFETY, AGENTS, and roadmap support status aligned with actual behavior
 - no new mutating boot path without explicit risk acknowledgement
 

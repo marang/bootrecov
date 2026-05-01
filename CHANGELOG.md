@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.4.2 - 2026-05-01
+
+### Changed
+
+- README and roadmap now distinguish Ubuntu/Debian GRUB gate availability from apt/dpkg hook support.
+- Rootless VM testing now has explicit Ubuntu+GRUB, Debian+GRUB, and combined GRUB matrix targets.
+
+### Fixed
+
+- AUR builds now make the isolated Go module cache writable again after dependency download/build so `makepkg` clean-build removal can delete the old `srcdir`.
+
 ## v0.4.1 - 2026-05-01
 
 ### Changed

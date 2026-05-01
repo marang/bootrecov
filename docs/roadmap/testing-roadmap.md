@@ -7,14 +7,14 @@ The current release gate is:
 - `make test`
 - `make test-bootvm`
 
-The rootless VM gate validates the current GRUB boot path, SquashFS module archives, EFI mirror behavior, activation refusal for missing root modules, and reboot through a generated Bootrecov entry.
+The default rootless VM gate runs the `ubuntu-grub` scenario. `make test-bootvm-grub-matrix` runs explicit Ubuntu+GRUB and Debian+GRUB gates. The GRUB VM gates validate platform and bootloader detection, package-hook refusal where unsupported, SquashFS module archives, EFI mirror behavior, activation refusal for missing root modules, and reboot through a generated Bootrecov entry.
 
 ## Next VM Gates
 
 | Gate | Purpose | Required before |
 | --- | --- | --- |
 | Arch + GRUB + EFI | Preserve current supported baseline | every release |
-| Ubuntu/Debian + GRUB + EFI | Prove non-Arch GRUB support | declaring Ubuntu/Debian fully supported |
+| Ubuntu/Debian + GRUB + EFI | Prove non-Arch GRUB support | available as `make test-bootvm-grub-matrix`; mandatory before declaring Ubuntu/Debian fully supported |
 | systemd-boot + EFI | Prove managed systemd-boot entries | enabling systemd-boot mutations |
 | Fedora-family + GRUB/BLS | Prove dracut/BLS compatibility | declaring Fedora-family support |
 

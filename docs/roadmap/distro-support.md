@@ -2,19 +2,19 @@
 
 ## Current State
 
-Bootrecov currently has platform detection for Arch, Ubuntu, and Debian through `/etc/os-release`. Arch has pacman hook support. Ubuntu and Debian can use the GRUB backend when the detected boot layout matches, but apt/dpkg hooks are intentionally not implemented yet.
+Bootrecov currently has platform detection for Arch, Ubuntu, and Debian through `/etc/os-release`. Arch has pacman hook support. Ubuntu and Debian have explicit GRUB + EFI VM gate targets, and apt/dpkg hooks are intentionally not implemented yet.
 
 ## Priority 1: Ubuntu and Debian
 
 Goal:
 
-- make Ubuntu/Debian + GRUB + EFI a supported combination, not just detected GRUB layouts.
+- harden Ubuntu/Debian + GRUB + EFI until the VM gates are reliable enough to be mandatory release gates.
 
 Implementation direction:
 
 - Keep GRUB as the only mutating backend for this phase.
 - Document supported path variants: `/boot`, `/boot/efi`, `/efi`, and ESP-at-`/boot`.
-- Add a dedicated Ubuntu/Debian VM release gate that runs create, activate, reboot, deactivate, and recovery refusal checks.
+- Keep the dedicated Ubuntu/Debian VM gates running create, activate, reboot, deactivate, and recovery refusal checks.
 - Add `doctor` warnings when apt/dpkg hook support is unavailable.
 - Design apt/dpkg hooks in a separate document before implementation.
 
@@ -26,7 +26,7 @@ Out of scope for this phase:
 
 Exit criteria:
 
-- Ubuntu/Debian GRUB scenario passes in VM.
+- Ubuntu/Debian GRUB scenarios pass in VM.
 - README and SAFETY describe the exact support status.
 - `bootrecov hook install` still refuses apt/dpkg platforms until hook safety is designed.
 

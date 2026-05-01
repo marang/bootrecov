@@ -2,11 +2,70 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-WORK_DIR="${ROOT_DIR}/test/bootvm/work"
 BIN_PATH="${ROOT_DIR}/bin/bootrecov"
 SMOKE_BIN="${ROOT_DIR}/bin/guest_smoke"
 SMOKE_SRC="${ROOT_DIR}/test/bootvm/guest_smoke.go"
-BASE_IMAGE="${WORK_DIR}/ubuntu-noble-server-cloudimg-amd64.img"
+BOOTVM_SCENARIO="${BOOTVM_SCENARIO:-ubuntu-grub}"
+CHECK_ONLY=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --check|--prepare)
+      CHECK_ONLY="$1"
+      shift
+      ;;
+    --scenario)
+      if [[ $# -lt 2 ]]; then
+        echo "--scenario requires a value" >&2
+        exit 2
+      fi
+      BOOTVM_SCENARIO="$2"
+      shift 2
+      ;;
+    --scenario=*)
+      BOOTVM_SCENARIO="${1#--scenario=}"
+      shift
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      exit 2
+      ;;
+  esac
+done
+
+EXPECTED_PLATFORM=""
+EXPECTED_BOOTLOADER="grub"
+EXPECTED_HOOK_SUPPORTED="no"
+BASE_IMAGE_NAME=""
+DEFAULT_IMAGE_URL=""
+
+case "${BOOTVM_SCENARIO}" in
+  ubuntu-grub)
+    EXPECTED_PLATFORM="ubuntu"
+    BASE_IMAGE_NAME="ubuntu-noble-server-cloudimg-amd64.img"
+    DEFAULT_IMAGE_URL="https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"
+    ;;
+  debian-grub)
+    EXPECTED_PLATFORM="debian"
+    BASE_IMAGE_NAME="debian-12-genericcloud-amd64.qcow2"
+    DEFAULT_IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
+    ;;
+  *)
+    echo "unsupported bootvm scenario: ${BOOTVM_SCENARIO}" >&2
+    echo "supported scenarios: ubuntu-grub, debian-grub" >&2
+    exit 2
+    ;;
+esac
+
+if [[ -n "${BOOTVM_WORK_DIR:-}" ]]; then
+  WORK_DIR="${BOOTVM_WORK_DIR}"
+elif [[ "${BOOTVM_SCENARIO}" == "ubuntu-grub" ]]; then
+  WORK_DIR="${ROOT_DIR}/test/bootvm/work"
+else
+  WORK_DIR="${ROOT_DIR}/test/bootvm/work-${BOOTVM_SCENARIO}"
+fi
+
+BASE_IMAGE="${WORK_DIR}/${BASE_IMAGE_NAME}"
 OVERLAY_IMAGE="${WORK_DIR}/bootvm-overlay.qcow2"
 SEED_IMAGE="${WORK_DIR}/seed.img"
 SERIAL_LOG="${WORK_DIR}/serial.log"
@@ -21,8 +80,7 @@ VM_USER="bootrecov"
 VM_HOST="127.0.0.1"
 SSH_OPTS=(-i "${SSH_KEY}" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p "${SSH_PORT}")
 SCP_OPTS=(-i "${SSH_KEY}" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -P "${SSH_PORT}")
-IMAGE_URL="${BOOTVM_IMAGE_URL:-https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img}"
-CHECK_ONLY="${1:-}"
+IMAGE_URL="${BOOTVM_IMAGE_URL:-${DEFAULT_IMAGE_URL}}"
 RUN_LOG="${WORK_DIR}/run.log"
 STATUS_FILE="${WORK_DIR}/status"
 LAST_ERROR_FILE="${WORK_DIR}/last_error"
@@ -63,6 +121,7 @@ check_prereqs() {
     return 1
   fi
   echo "preflight OK: all required tools are installed."
+  echo "scenario: ${BOOTVM_SCENARIO}"
 }
 
 find_ovmf_code() {
@@ -450,7 +509,7 @@ scp "${SCP_OPTS[@]}" "${SMOKE_BIN}" "${VM_USER}@${VM_HOST}:/tmp/guest_smoke" >/d
 
 set_status "running-guest-smoke-test"
 echo "guest smoke test: begin"
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "bash -se" <<'EOF'
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "EXPECTED_PLATFORM='${EXPECTED_PLATFORM}' EXPECTED_BOOTLOADER='${EXPECTED_BOOTLOADER}' EXPECTED_HOOK_SUPPORTED='${EXPECTED_HOOK_SUPPORTED}' bash -se" <<'EOF'
 set -euo pipefail
 BACKUP_DIR=/boot/efi/bootrecov-snapshots/2026-smoke
 SNAPSHOT_DIR=/var/backups/bootrecov-snapshots/2026-smoke
@@ -544,6 +603,37 @@ if [[ ! -f "${GRUB_CUSTOM}" ]]; then
 fi
 sudo chmod 755 /etc/grub.d/41_bootrecov_snapshots
 echo "[guest] setup done"
+
+echo "[guest] verifying detected platform, bootloader, and hook policy"
+sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov doctor >/tmp/bootrecov-doctor.log
+sudo cat /tmp/bootrecov-doctor.log | sed 's/^/[doctor] /'
+DOCTOR_PLATFORM="$(awk '$1 == "platform" {print $2}' /tmp/bootrecov-doctor.log)"
+DOCTOR_BOOTLOADER="$(awk '$1 == "bootloader" {print $2}' /tmp/bootrecov-doctor.log)"
+DOCTOR_HOOK_SUPPORTED="$(awk '$1 == "hook-supported" {print $2}' /tmp/bootrecov-doctor.log)"
+if [[ "${DOCTOR_PLATFORM}" != "${EXPECTED_PLATFORM}" ]]; then
+  echo "[guest] expected platform ${EXPECTED_PLATFORM}, got ${DOCTOR_PLATFORM}" >&2
+  exit 1
+fi
+if [[ "${DOCTOR_BOOTLOADER}" != "${EXPECTED_BOOTLOADER}" ]]; then
+  echo "[guest] expected bootloader ${EXPECTED_BOOTLOADER}, got ${DOCTOR_BOOTLOADER}" >&2
+  exit 1
+fi
+if [[ "${DOCTOR_HOOK_SUPPORTED}" != "${EXPECTED_HOOK_SUPPORTED}" ]]; then
+  echo "[guest] expected hook-supported ${EXPECTED_HOOK_SUPPORTED}, got ${DOCTOR_HOOK_SUPPORTED}" >&2
+  exit 1
+fi
+if [[ "${EXPECTED_HOOK_SUPPORTED}" == "no" ]]; then
+  if sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov hook install >/tmp/bootrecov-hook-install.log 2>&1; then
+    echo "[guest] hook install unexpectedly succeeded on ${EXPECTED_PLATFORM}" >&2
+    sudo cat /tmp/bootrecov-hook-install.log || true
+    exit 1
+  fi
+  if [[ -e /etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook ]]; then
+    echo "[guest] unsupported hook install created a pacman hook file" >&2
+    exit 1
+  fi
+  echo "[guest] unsupported package hook install is safely rejected"
+fi
 
 echo "[guest] running real snapshot create for SquashFS module archive coverage"
 SNAP_NAME="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup create | tail -n1 | tr -d '\r\n')"

@@ -14,7 +14,17 @@ Run from repository root:
 make test-bootvm
 ```
 
-`test-bootvm` auto-prepares cached assets on first run.
+`test-bootvm` runs the default `ubuntu-grub` scenario and auto-prepares cached assets on first run.
+
+Explicit GRUB platform gates:
+
+```bash
+make test-bootvm-ubuntu-grub
+make test-bootvm-debian-grub
+make test-bootvm-grub-matrix
+```
+
+The Ubuntu gate uses the Ubuntu Noble cloud image. The Debian gate uses the Debian 12 genericcloud image. Non-default scenarios store artifacts under scenario-specific work directories such as `test/bootvm/work-debian-grub/`.
 
 Optional explicit prepare step:
 
@@ -28,7 +38,7 @@ Watch mode:
 make test-bootvm-watch
 ```
 
-Watch mode opens three panes: the test runner, a status/log dashboard, and an interactive serial console into the guest that reconnects after reboots. Press `Ctrl-]` in the serial pane to detach from the console connection.
+Watch mode opens three panes: the test runner, a status/log dashboard, and an interactive serial console into the guest that reconnects after reboots. Press `Ctrl-]` in the serial pane to detach from the console connection. Set `BOOTVM_SCENARIO=debian-grub` to watch the Debian gate.
 
 Host prerequisites:
 
@@ -64,6 +74,8 @@ Runtime logs (written under project directory):
 
 The test assertions include:
 
+- `bootrecov doctor` reports the expected platform and GRUB backend
+- unsupported apt/dpkg package hook installation is rejected without creating a pacman hook
 - GRUB custom script dump before and after backup entry generation
 - real `bootrecov backup create` generation of a compressed root module SquashFS image
 - activation of the real snapshot while verifying `.bootrecov` metadata is excluded from the EFI mirror
