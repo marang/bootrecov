@@ -375,12 +375,12 @@ if [[ ! -f "${PREPARED_MARKER}" ]]; then
   date -u +'%Y-%m-%dT%H:%M:%SZ' >"${PREPARED_MARKER}"
 fi
 
-if [[ ! -x "${BIN_PATH}" || "${ROOT_DIR}/cmd/bootrecov/main.go" -nt "${BIN_PATH}" || "${ROOT_DIR}/internal/tui/backups.go" -nt "${BIN_PATH}" || "${ROOT_DIR}/internal/tui/model.go" -nt "${BIN_PATH}" || "${ROOT_DIR}/internal/tui/view.go" -nt "${BIN_PATH}" ]]; then
+if [[ ! -x "${BIN_PATH}" ]] || find "${ROOT_DIR}/cmd" "${ROOT_DIR}/internal" -name '*.go' -newer "${BIN_PATH}" -print -quit | grep -q .; then
   set_status "building-binary"
   (cd "${ROOT_DIR}" && make build)
 fi
 
-if [[ ! -x "${SMOKE_BIN}" || "${SMOKE_SRC}" -nt "${SMOKE_BIN}" || "${ROOT_DIR}/internal/tui/backups.go" -nt "${SMOKE_BIN}" || "${ROOT_DIR}/internal/tui/model.go" -nt "${SMOKE_BIN}" || "${ROOT_DIR}/internal/tui/view.go" -nt "${SMOKE_BIN}" ]]; then
+if [[ ! -x "${SMOKE_BIN}" ]] || find "${ROOT_DIR}/test/bootvm" "${ROOT_DIR}/internal" -name '*.go' -newer "${SMOKE_BIN}" -print -quit | grep -q .; then
   set_status "building-guest-smoke-binary"
   (cd "${ROOT_DIR}" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "${SMOKE_BIN}" ./test/bootvm/guest_smoke.go)
 fi
@@ -546,7 +546,7 @@ sudo chmod 755 /etc/grub.d/41_bootrecov_snapshots
 echo "[guest] setup done"
 
 echo "[guest] running real snapshot create for SquashFS module archive coverage"
-SNAP_NAME="$(sudo /tmp/bootrecov backup create | tail -n1 | tr -d '\r\n')"
+SNAP_NAME="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup create | tail -n1 | tr -d '\r\n')"
 if [[ -z "${SNAP_NAME}" ]]; then
   echo "[guest] bootrecov backup create did not return a snapshot name" >&2
   exit 1
@@ -569,22 +569,22 @@ echo "[guest] module SquashFS image created: ${MODULE_IMAGE}"
 
 echo "[guest] activating real snapshot and checking EFI excludes internal metadata"
 df -h /boot/efi | sed 's/^/[guest-efi-free-before-activate] /'
-sudo /tmp/bootrecov backup activate "${SNAP_NAME}" >/tmp/bootrecov-activate.log 2>&1 || {
+sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${SNAP_NAME}" >/tmp/bootrecov-activate.log 2>&1 || {
   echo "[guest] bootrecov backup activate failed"
   sudo cat /tmp/bootrecov-activate.log || true
   exit 1
 }
-EFI_STATE="$(sudo /tmp/bootrecov backup list | awk -v name="${SNAP_NAME}" '$1 == name {print $3}')"
+EFI_STATE="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list | awk -v name="${SNAP_NAME}" '$1 == name {print $3}')"
 if [[ "${EFI_STATE}" != "yes" ]]; then
   echo "[guest] expected activated snapshot to show EFI=yes in backup list" >&2
-  sudo /tmp/bootrecov backup list || true
+  sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list || true
   sudo cat /tmp/bootrecov-activate.log || true
   exit 1
 fi
 REAL_EFI_DIR="/boot/efi/bootrecov-snapshots/${SNAP_NAME}"
 if ! wait_for_guest_path dir "${REAL_EFI_DIR}"; then
   echo "[guest] expected EFI mirror after activation: ${REAL_EFI_DIR}" >&2
-  sudo /tmp/bootrecov backup list || true
+  sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list || true
   sudo cat /tmp/bootrecov-activate.log || true
   echo "[guest] current EFI mirror tree:"
   sudo find /boot/efi -maxdepth 4 -type d -o -type f | sort | sed 's/^/[efi-tree] /' || true
@@ -596,7 +596,7 @@ if [[ -e "${REAL_EFI_DIR}/.bootrecov" ]]; then
   exit 1
 fi
 echo "[guest] EFI mirror excludes .bootrecov metadata"
-sudo /tmp/bootrecov backup deactivate "${SNAP_NAME}" >/tmp/bootrecov-deactivate.log 2>&1 || {
+sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${SNAP_NAME}" >/tmp/bootrecov-deactivate.log 2>&1 || {
   echo "[guest] bootrecov backup deactivate failed"
   sudo cat /tmp/bootrecov-deactivate.log || true
   exit 1
@@ -612,7 +612,7 @@ sudo mkdir -p "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules"
 sudo cp -f "${KERNEL_SRC}" "${PREV_SNAPSHOT_DIR}/vmlinuz-${PREV_VERSION}"
 sudo cp -f "${INITRD_SRC}" "${PREV_SNAPSHOT_DIR}/initrd.img-${PREV_VERSION}"
 sudo cp -f "${MODULE_IMAGE}" "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules/${PREV_VERSION}.sqfs"
-if sudo /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
+if sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
   echo "[guest] activation unexpectedly succeeded for missing previous-kernel module tree" >&2
   sudo cat /tmp/bootrecov-prev-activate.log || true
   exit 1

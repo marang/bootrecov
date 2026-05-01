@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.0 - 2026-05-01
+
+### Added
+
+- Platform and bootloader detection with `bootrecov doctor`.
+- Conservative boot directory, ESP root, and GRUB config path detection for common non-default partition layouts.
+- Generic `bootrecov bootloader ...` commands backed by the current GRUB implementation.
+- Per-invocation risk acknowledgement for TUI and CLI usage.
+- Environment overrides for platform, bootloader, boot directory, ESP directory, and EFI mirror directory.
+- Initial Ubuntu/Debian detection for GRUB-based layouts.
+- systemd-boot detection as an explicit unsupported backend instead of silently assuming GRUB.
+
+### Changed
+
+- `bootrecov grub list` is now a deprecated compatibility alias for `bootrecov bootloader list`.
+- Runtime checks reject unsupported bootloader mutations before touching EFI or bootloader configuration.
+- Package-manager hook installation now reports unsupported non-Arch platforms explicitly.
+- Ambiguous GRUB and systemd-boot signals are rejected instead of silently choosing a backend.
+- GRUB entry management and mountinfo parsing are split out of the core backup module.
+
 ## v0.2.0 - 2026-05-01
 
 ### Added

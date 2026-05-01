@@ -29,6 +29,9 @@ Current core is:
 - snapshot creation
 - EFI mirror activation/deactivation
 - GRUB custom entry management
+- platform detection for Arch and Ubuntu/Debian
+- bootloader detection for GRUB and systemd-boot
+- generic bootloader CLI entrypoints backed by the GRUB adapter
 - pacman pre-transaction hook installation
 - rootless VM integration harness
 
@@ -44,11 +47,37 @@ Current core is:
 
 Recommended delivery order:
 
-1. Improve operator visibility and CLI ergonomics.
-2. Add metadata, retention, and machine-readable outputs.
-3. Add controlled boot orchestration.
-4. Add automated validation and failure handling.
-5. Add repair workflows and broader distro support.
+1. Expand platform/bootloader adapters without weakening existing GRUB safety.
+2. Improve operator visibility and CLI ergonomics.
+3. Add metadata, retention, and machine-readable outputs.
+4. Add controlled boot orchestration.
+5. Add automated validation and failure handling.
+6. Add repair workflows and broader distro support.
+
+## Phase 0: Adapter Foundation
+
+Goal:
+
+- decouple platform and bootloader assumptions from snapshot safety logic
+- prove a second platform through Ubuntu/Debian detection while keeping GRUB as the only supported bootloader backend
+
+Current status:
+
+- `bootrecov doctor`
+- platform detection through `/etc/os-release`
+- bootloader detection for GRUB and systemd-boot
+- environment overrides for platform, bootloader, boot dir, ESP dir, and EFI mirror dir
+- generic `bootrecov bootloader ...` commands
+- Arch/pacman hook support retained
+- Ubuntu/Debian apt hooks intentionally not implemented yet
+- systemd-boot detected but rejected for mutating operations
+
+Next work:
+
+- move GRUB code behind a smaller explicit backend type
+- add Ubuntu/Debian VM scenario to the release gate
+- design apt/dpkg hook support separately before enabling it
+- implement systemd-boot entry management only after backend tests are ready
 
 ## Phase 1: Operator-Focused CLI and Inspection
 

@@ -2,7 +2,7 @@
 pkgname=bootrecov
 pkgver=0.0.0
 pkgrel=1
-pkgdesc='TUI/CLI helper to manage mirrored /boot backups and GRUB recovery entries'
+pkgdesc='TUI/CLI helper for /boot recovery snapshots and bootloader fallback entries'
 arch=('x86_64' 'aarch64')
 url='https://github.com/marang/bootrecov'
 license=('MIT')

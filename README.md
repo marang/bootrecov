@@ -4,19 +4,26 @@
   <img src="docs/assets/bootrecov-logo.png" alt="bootrecov logo" width="220">
 </p>
 
-`bootrecov` is a Linux-only CLI and TUI for creating inspectable `/boot` recovery snapshots and exposing selected snapshots as GRUB fallback boot entries.
+`bootrecov` is a Linux-only CLI and TUI for creating inspectable `/boot` recovery snapshots and exposing selected snapshots as bootloader fallback entries.
 
-It is aimed at Arch/GRUB/EFI systems where you want a simple recovery path for kernel, initramfs, microcode, and GRUB state without doing a full root filesystem rollback.
+It is aimed at Linux EFI systems where you want a simple recovery path for kernel, initramfs, microcode, and bootloader state without doing a full root filesystem rollback. GRUB is the currently supported bootloader backend; Arch is the fully supported hook platform, with Ubuntu/Debian detection and GRUB layout support now available.
+
+## No Warranty / Own Risk
+
+Bootrecov touches boot-critical files and can make a system unbootable. It is provided without warranty, and you use it entirely at your own risk.
+
+Every TUI or CLI invocation requires an explicit acknowledgement. Interactive runs ask you to type `I UNDERSTAND`. Non-interactive automation must pass `--yes-i-understand` or set `BOOTRECOV_ACCEPT_RISK=1` for that invocation.
 
 ## What It Can Do
 
 - Create timestamped snapshots of `/boot`.
 - Store snapshots under `/var/backups/bootrecov-snapshots/<name>`.
 - Optionally mirror selected snapshots into `/boot/efi/bootrecov-snapshots/<name>` for booting.
+- Detect the current Linux platform and bootloader with explicit override support.
 - Generate Bootrecov GRUB entries in `/etc/grub.d/41_bootrecov_snapshots`.
 - Regenerate `/boot/grub/grub.cfg` after GRUB entry changes.
 - Activate and deactivate recovery entries from the CLI or TUI.
-- Reconcile EFI mirrors and GRUB entries against the snapshot store.
+- Reconcile EFI mirrors and bootloader entries against the snapshot store.
 - Remove stale inactive EFI mirrors.
 - Preserve an already bootable GRUB entry if refreshing its active EFI mirror fails transiently.
 - Print GRUB recovery commands for an activated snapshot.
@@ -25,6 +32,7 @@ It is aimed at Arch/GRUB/EFI systems where you want a simple recovery path for k
 - Refuse activation when a snapshot clearly needs `/usr/lib/modules/<kernel-version>` but that module tree is missing on the root filesystem.
 - Validate snapshot names before path-sensitive operations.
 - Verify the EFI mount before activation or reconcile mutates EFI state, so it does not silently write into an unmounted `/boot/efi` directory.
+- Report detected platform, bootloader, paths, and support status with `bootrecov doctor`.
 
 ## What It Does Not Do
 
@@ -33,6 +41,8 @@ It is aimed at Arch/GRUB/EFI systems where you want a simple recovery path for k
 - It does not repair a broken root filesystem.
 - It does not detect failed boots automatically.
 - It does not prune old snapshots automatically yet.
+- It does not install apt/dpkg hooks yet.
+- It detects `systemd-boot`, but does not manage systemd-boot entries yet.
 - It is not a replacement for a rescue USB or real system backups.
 
 The archived module SquashFS is there to make the backup complete and inspectable. Activation stays conservative: if you want to boot an older kernel, the matching `/usr/lib/modules/<version>` must already exist on the root filesystem.
@@ -59,7 +69,7 @@ The internal `.bootrecov` metadata is intentionally excluded from EFI mirrors so
 Runtime:
 
 - Linux
-- GRUB
+- GRUB for boot entry management
 - EFI system partition mounted at the expected location
 - `rclone`
 - `grub-mkconfig`
@@ -76,6 +86,40 @@ Normal operation usually requires root because Bootrecov writes to:
 - `/etc/grub.d/41_bootrecov_snapshots`
 - `/boot/grub/grub.cfg`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
+
+## Support Matrix
+
+### Distribution Support
+
+| Distribution / platform | Status | Package hook |
+| --- | --- | --- |
+| Arch Linux | Supported for Linux + EFI + GRUB systems | pacman hook supported |
+| Arch-based distributions | Expected to work when their `/etc/os-release` and GRUB/EFI layout match Arch conventions | pacman hook supported when pacman hook paths are present |
+| Ubuntu | Supported for Linux + EFI + GRUB layouts | apt/dpkg hook planned, not implemented |
+| Debian | Supported for Linux + EFI + GRUB layouts | apt/dpkg hook planned, not implemented |
+| Other Linux distributions | Experimental via detection and environment overrides | not implemented |
+
+### Bootloader Support
+
+| Bootloader | Status |
+| --- | --- |
+| GRUB | Supported backend |
+| systemd-boot | Detected, but not managed yet |
+| rEFInd | Not supported yet |
+| Limine | Not supported yet |
+| UKI-only / EFI stub | Not supported yet |
+| Syslinux / extlinux | Not supported yet |
+| U-Boot | Not supported yet |
+
+Runtime detection uses `/etc/os-release`, mount information from `/proc/self/mountinfo`, visible boot artifacts, and existing bootloader files. Bootrecov can detect common layouts such as `/boot/efi`, `/efi`, and ESP-at-`/boot`; explicit overrides still win for unusual systems or tests:
+
+```bash
+BOOTRECOV_PLATFORM=ubuntu
+BOOTRECOV_BOOTLOADER=grub
+BOOTRECOV_BOOT_DIR=/boot
+BOOTRECOV_ESP_DIR=/boot/efi
+BOOTRECOV_EFI_MIRROR_DIR=/boot/efi/bootrecov-snapshots
+```
 
 ## Install And Build
 
@@ -115,16 +159,16 @@ List snapshots:
 sudo bootrecov backup list
 ```
 
-Activate a snapshot as an EFI + GRUB fallback:
+Activate a snapshot as an EFI + bootloader fallback:
 
 ```bash
 sudo bootrecov backup activate <snapshot-name>
 ```
 
-List Bootrecov GRUB entries:
+List Bootrecov bootloader entries:
 
 ```bash
-sudo bootrecov grub list
+sudo bootrecov bootloader list
 ```
 
 Deactivate a snapshot:
@@ -139,10 +183,16 @@ Delete a snapshot and related artifacts:
 sudo bootrecov backup delete <snapshot-name>
 ```
 
-Reconcile stored snapshots, EFI mirrors, and GRUB entries:
+Reconcile stored snapshots, EFI mirrors, and bootloader entries:
 
 ```bash
 sudo bootrecov reconcile
+```
+
+Inspect detected platform and bootloader state:
+
+```bash
+bootrecov doctor
 ```
 
 ## CLI Reference
@@ -152,6 +202,12 @@ Start the TUI:
 ```bash
 bootrecov
 bootrecov tui
+```
+
+Inspect runtime detection:
+
+```bash
+bootrecov doctor
 ```
 
 Manage snapshots:
@@ -165,19 +221,26 @@ bootrecov backup delete <snapshot-name>
 bootrecov backup recovery <snapshot-name>
 ```
 
-Manage GRUB state:
+Manage bootloader state:
 
 ```bash
-bootrecov grub list
+bootrecov bootloader list
+bootrecov bootloader activate <snapshot-name>
+bootrecov bootloader deactivate <snapshot-name>
+bootrecov bootloader recovery <snapshot-name>
 bootrecov reconcile
 ```
 
-Install the pacman hook:
+`bootrecov grub list` is retained as a deprecated compatibility alias for `bootrecov bootloader list`.
+
+Install the package-manager hook:
 
 ```bash
 bootrecov hook install
 bootrecov hook install /absolute/path/to/bootrecov
 ```
+
+Hook installation is currently implemented for Arch/pacman. Ubuntu/Debian apt/dpkg hook support is planned but intentionally not enabled yet.
 
 Compatibility aliases retained for existing automation:
 
@@ -191,7 +254,7 @@ bootrecov recovery-commands <snapshot-name>
 
 - `SNAPSHOT`: snapshot exists in `/var/backups/bootrecov-snapshots`
 - `EFI`: active EFI mirror exists
-- `GRUB`: Bootrecov GRUB entry exists
+- `BOOTLOADER`: Bootrecov bootloader entry exists
 - `BOOTABLE`: snapshot is complete, active, synced, and not missing known required modules
 - `ROOT-MODULES`: `yes`, `missing`, `archived`, or `unknown`
 - `KERNEL`: detected kernel version
@@ -201,17 +264,17 @@ bootrecov recovery-commands <snapshot-name>
 Backups view:
 
 - `b`: create snapshot
-- `g`: toggle EFI + GRUB activation
-- `s`: reconcile EFI mirrors and GRUB state
+- `g`: toggle EFI + bootloader activation
+- `s`: reconcile EFI mirrors and bootloader state
 - `r`: show recovery commands for selected backup
-- `p`: install pacman hook
+- `p`: install package-manager hook
 - `d`: delete selected backup, with confirmation
-- `tab`: switch to GRUB entries
+- `tab`: switch to bootloader entries
 - `q`: quit
 
-GRUB entries view:
+Bootloader entries view:
 
-- `x`: remove selected GRUB entry
+- `x`: remove selected bootloader entry
 - `tab`: switch back to backups
 - `q`: quit
 
@@ -254,20 +317,20 @@ Activation performs these steps:
 4. Verify that the EFI root is actually mounted.
 5. Check available EFI space.
 6. Copy the snapshot into `/boot/efi/bootrecov-snapshots/<name>`.
-7. Add a Bootrecov GRUB menu entry.
+7. Add a Bootrecov bootloader entry. For the current backend, this is a GRUB menu entry.
 8. Regenerate `/boot/grub/grub.cfg`.
 
-Deactivation removes the GRUB entry, removes the EFI mirror, and regenerates `grub.cfg`.
+Deactivation removes the bootloader entry, removes the EFI mirror, and regenerates the bootloader config when the backend requires it.
 
 Reconcile is intentionally conservative:
 
 - Active snapshots are refreshed into EFI.
 - Inactive EFI mirrors are removed.
-- Stale GRUB entries are removed.
+- Stale bootloader entries are removed.
 - Entries for known missing root module trees are treated as not boot-ready.
 - A previously bootable entry is preserved if refreshing its active EFI mirror fails transiently.
 
-## Pacman Hook
+## Package Hooks
 
 Install:
 
@@ -275,7 +338,7 @@ Install:
 sudo bootrecov hook install
 ```
 
-Installed hook path:
+On Arch, the installed hook path is:
 
 ```text
 /etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook
@@ -284,7 +347,7 @@ Installed hook path:
 The hook runs:
 
 ```bash
-bootrecov backup-now
+/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov backup-now
 ```
 
 Current trigger targets:
@@ -296,6 +359,8 @@ Current trigger targets:
 
 There is no automatic pruning yet, so watch disk usage if you enable the hook.
 
+On Ubuntu/Debian, `bootrecov hook install` currently returns a clear "not implemented yet" error instead of installing an unsafe partial apt/dpkg hook.
+
 ## Recovery Commands
 
 For an activated snapshot:
@@ -304,7 +369,7 @@ For an activated snapshot:
 sudo bootrecov backup recovery <snapshot-name>
 ```
 
-This prints GRUB commands that can be used manually from a GRUB prompt. The snapshot must already have an EFI mirror.
+This prints backend-specific recovery commands. For the current GRUB backend, the output can be used manually from a GRUB prompt. The snapshot must already have an EFI mirror.
 
 ## Tests
 
@@ -389,7 +454,7 @@ The VM test currently verifies:
 - SquashFS module archive creation
 - EFI mirror creation without leaking `.bootrecov` metadata
 - old-kernel snapshot activation refusal when `/usr/lib/modules/<version>` is missing
-- GRUB entry generation
+- bootloader entry generation through the GRUB backend
 - booting the Bootrecov GRUB entry
 - booting the backup entry after corrupting the primary kernel
 
@@ -462,8 +527,9 @@ Main implementation:
 
 The safety model is documented in [`SAFETY.md`](SAFETY.md).
 
-- Bootrecov assumes Linux + GRUB + EFI.
-- The default GRUB config output is `/boot/grub/grub.cfg`.
-- The default EFI mirror root is `/boot/efi/bootrecov-snapshots`.
+- Bootrecov assumes Linux + EFI, with GRUB as the currently supported bootloader backend.
+- The default GRUB config output is `/boot/grub/grub.cfg`, with detection for GRUB config under the detected boot directory.
+- The default EFI mirror root is `/boot/efi/bootrecov-snapshots`, with detection for mounted ESP roots such as `/boot/efi`, `/efi`, or ESP-at-`/boot`.
 - Activation refuses to proceed if the EFI root is not mounted.
+- systemd-boot is detected but not managed yet.
 - Bootrecov is still young software touching high-risk boot paths. Test the full loop in a VM or spare system before relying on it.

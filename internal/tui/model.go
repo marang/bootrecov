@@ -205,7 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("hook install failed: %v", err)
 					break
 				}
-				m.status = fmt.Sprintf("pacman hook installed: %s", PacmanHookPath)
+				m.status = fmt.Sprintf("package-manager hook installed: %s", PacmanHookPath)
 			}
 		case "r":
 			if m.mode == modeBackups && len(m.Backups) > 0 {
@@ -278,7 +278,7 @@ func (m Model) viewBackups() string {
 		}
 		s += statusStyle.Render(m.status) + "\n"
 	}
-	footer := "q: quit, b: backup now, g: toggle EFI+GRUB, s: reconcile, r: recovery cmds, p: install pacman hook, d: delete, tab: entries"
+	footer := "q: quit, b: backup now, g: toggle EFI+bootloader, s: reconcile, r: recovery cmds, p: install hook, d: delete, tab: entries"
 	if m.confirmDelete {
 		footer = modalStyle.Render(fmt.Sprintf("Delete backup '%s'? y=yes, n=no", m.deleteTarget))
 	} else {
@@ -290,7 +290,7 @@ func (m Model) viewBackups() string {
 
 func (m Model) viewEntries() string {
 	if len(m.Entries) == 0 {
-		return borderStyle.Render(headerStyle.Render("GRUB Entries") + "\nsource: " + GrubCustom + "\nNone\nq: quit, tab: backups")
+		return borderStyle.Render(headerStyle.Render("Bootloader Entries") + "\nsource: " + GrubCustom + "\nNone\nq: quit, tab: backups")
 	}
 	var s string
 	for i, entry := range m.Entries {
@@ -301,7 +301,7 @@ func (m Model) viewEntries() string {
 			s += "  " + line + "\n"
 		}
 	}
-	return borderStyle.Render(headerStyle.Render("GRUB Entries") + "\nsource: " + GrubCustom + "\n" + s + "q: quit, x: remove, tab: backups")
+	return borderStyle.Render(headerStyle.Render("Bootloader Entries") + "\nsource: " + GrubCustom + "\n" + s + "q: quit, x: remove, tab: backups")
 }
 
 func statusString(b BootBackup) string {

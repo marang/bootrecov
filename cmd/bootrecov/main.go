@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"log"
 	"os"
@@ -14,6 +15,14 @@ import (
 	"github.com/marang/bootrecov/internal/tui"
 )
 
+const (
+	riskAcceptEnv     = "BOOTRECOV_ACCEPT_RISK"
+	riskAcceptPhrase  = "I UNDERSTAND"
+	riskAcceptFlagMsg = "acknowledge that bootrecov has no warranty and is used at your own risk"
+)
+
+var riskAccepted bool
+
 func main() {
 	configureFromEnv()
 	if err := newRootCmd().Execute(); err != nil {
@@ -22,26 +31,31 @@ func main() {
 }
 
 func configureFromEnv() {
-	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_BACKUP_PROFILE")); v != "" {
-		tui.BackupProfile = v
-	}
+	tui.ApplyEnvironmentOverridesFromEnv()
+	tui.ConfigureDetectedEnvironment()
 }
 
 func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:           "bootrecov",
-		Short:         "Manage /boot recovery snapshots and GRUB fallback entries",
+		Short:         "Manage /boot recovery snapshots and bootloader fallback entries",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			return requireRiskAcknowledgement()
+		},
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return runTUI()
 		},
 	}
+	rootCmd.PersistentFlags().BoolVar(&riskAccepted, "yes-i-understand", false, riskAcceptFlagMsg)
 
 	commands := []*cobra.Command{
 		newTUICmd(),
+		newDoctorCmd(),
 		newReconcileCmd(),
 		newHookCmd(),
+		newBootloaderCmd(),
 		newGrubCmd(),
 		newBackupCmd(),
 	}
@@ -63,14 +77,42 @@ func newTUICmd() *cobra.Command {
 func newReconcileCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "reconcile",
-		Short: "Reconcile EFI mirrors and GRUB recovery entries",
+		Short: "Reconcile EFI mirrors and bootloader recovery entries",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			backups, entries, err := tui.SyncBackupsAndGrub()
 			if err != nil {
 				return err
 			}
-			fmt.Printf("reconciled %d backups and %d GRUB entries\n", len(backups), len(entries))
+			fmt.Printf("reconciled %d backups and %d bootloader entries\n", len(backups), len(entries))
 			return nil
+		},
+	}
+}
+
+func newDoctorCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "doctor",
+		Short: "Show detected platform, bootloader, paths, and support status",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			info := tui.CurrentRuntimeEnvironment()
+			tw := newTabWriter()
+			fmt.Fprintln(tw, "KEY\tVALUE")
+			fmt.Fprintf(tw, "platform\t%s (%s)\n", info.PlatformID, info.PlatformName)
+			fmt.Fprintf(tw, "bootloader\t%s (%s)\n", info.BootloaderID, info.BootloaderName)
+			fmt.Fprintf(tw, "bootloader-supported\t%s\n", boolWord(info.BootloaderSupported))
+			fmt.Fprintf(tw, "hook-supported\t%s\n", boolWord(info.HookSupported))
+			fmt.Fprintf(tw, "boot-dir\t%s\n", info.Layout.BootDir)
+			fmt.Fprintf(tw, "esp-root\t%s\n", info.Layout.ESPRoot)
+			fmt.Fprintf(tw, "efi-mirror-dir\t%s\n", info.Layout.EFIMirrorDir)
+			fmt.Fprintf(tw, "snapshot-dir\t%s\n", info.Layout.SnapshotDir)
+			fmt.Fprintf(tw, "root-modules-dir\t%s\n", info.Layout.RootModulesDir)
+			fmt.Fprintf(tw, "grub-custom\t%s\n", info.Layout.GrubCustom)
+			fmt.Fprintf(tw, "grub-cfg-output\t%s\n", info.Layout.GrubCfgOutput)
+			fmt.Fprintf(tw, "pacman-hook-path\t%s\n", info.Layout.PacmanHookPath)
+			for _, warning := range info.Warnings {
+				fmt.Fprintf(tw, "warning\t%s\n", warning)
+			}
+			return tw.Flush()
 		},
 	}
 }
@@ -78,11 +120,11 @@ func newReconcileCmd() *cobra.Command {
 func newHookCmd() *cobra.Command {
 	hookCmd := &cobra.Command{
 		Use:   "hook",
-		Short: "Manage pacman hook integration",
+		Short: "Manage package-manager hook integration",
 	}
 	installCmd := &cobra.Command{
 		Use:   "install [absolute-binary-path]",
-		Short: "Install or refresh the pacman pre-transaction hook",
+		Short: "Install or refresh the platform package-manager hook",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path := ""
@@ -92,7 +134,7 @@ func newHookCmd() *cobra.Command {
 			if err := tui.InstallPacmanHook(path); err != nil {
 				return err
 			}
-			fmt.Printf("installed pacman hook at %s\n", tui.PacmanHookPath)
+			fmt.Printf("installed package-manager hook at %s\n", tui.PacmanHookPath)
 			return nil
 		},
 	}
@@ -100,29 +142,73 @@ func newHookCmd() *cobra.Command {
 	return hookCmd
 }
 
+func newBootloaderCmd() *cobra.Command {
+	bootloaderCmd := &cobra.Command{
+		Use:     "bootloader",
+		Aliases: []string{"bl"},
+		Short:   "Manage bootloader recovery entries",
+	}
+	bootloaderCmd.AddCommand(
+		&cobra.Command{
+			Use:   "list",
+			Short: "List Bootrecov bootloader entries",
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return printBootloaderEntries()
+			},
+		},
+		&cobra.Command{
+			Use:   "activate <snapshot-name>",
+			Short: "Activate a snapshot for EFI + bootloader booting",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if err := tui.ActivateBackup(args[0]); err != nil {
+					return err
+				}
+				fmt.Printf("activated %s\n", args[0])
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "deactivate <snapshot-name>",
+			Short: "Deactivate a snapshot and remove its EFI mirror and bootloader entry",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				if err := tui.DeactivateBackup(args[0]); err != nil {
+					return err
+				}
+				fmt.Printf("deactivated %s\n", args[0])
+				return nil
+			},
+		},
+		&cobra.Command{
+			Use:   "recovery <snapshot-name>",
+			Short: "Print bootloader recovery commands for an activated snapshot",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				commands, err := tui.RecoveryCommands(args[0])
+				if err != nil {
+					return err
+				}
+				fmt.Println(commands)
+				return nil
+			},
+		},
+	)
+	return bootloaderCmd
+}
+
 func newGrubCmd() *cobra.Command {
 	grubCmd := &cobra.Command{
-		Use:   "grub",
-		Short: "Inspect GRUB recovery entries",
+		Use:        "grub",
+		Short:      "Compatibility alias for bootloader commands",
+		Deprecated: "use bootrecov bootloader list",
 	}
 	grubCmd.AddCommand(&cobra.Command{
-		Use:   "list",
-		Short: "List Bootrecov GRUB entries",
+		Use:        "list",
+		Short:      "List Bootrecov GRUB entries",
+		Deprecated: "use bootrecov bootloader list",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			entries, err := tui.ListGrubEntries()
-			if err != nil {
-				return err
-			}
-			if len(entries) == 0 {
-				fmt.Println("no GRUB entries found")
-				return nil
-			}
-			tw := newTabWriter()
-			fmt.Fprintln(tw, "ID\tNAME\tPATH")
-			for _, entry := range entries {
-				fmt.Fprintf(tw, "%s\t%s\t%s\n", entry.ID, entry.Name, entry.BackupPath)
-			}
-			return tw.Flush()
+			return printBootloaderEntries()
 		},
 	})
 	return grubCmd
@@ -162,7 +248,7 @@ func newBackupCmd() *cobra.Command {
 				}
 				_ = entries
 				tw := newTabWriter()
-				fmt.Fprintln(tw, "NAME\tSNAPSHOT\tEFI\tGRUB\tBOOTABLE\tROOT-MODULES\tCREATED\tSIZE\tKERNEL")
+				fmt.Fprintln(tw, "NAME\tSNAPSHOT\tEFI\tBOOTLOADER\tBOOTABLE\tROOT-MODULES\tCREATED\tSIZE\tKERNEL")
 				for _, b := range backups {
 					fmt.Fprintf(
 						tw,
@@ -183,7 +269,7 @@ func newBackupCmd() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "activate <snapshot-name>",
-			Short: "Activate a snapshot for EFI + GRUB booting",
+			Short: "Activate a snapshot for EFI + bootloader booting",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if err := tui.ActivateBackup(args[0]); err != nil {
@@ -195,7 +281,7 @@ func newBackupCmd() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "deactivate <snapshot-name>",
-			Short: "Deactivate a snapshot and remove its EFI mirror and GRUB entry",
+			Short: "Deactivate a snapshot and remove its EFI mirror and bootloader entry",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if err := tui.DeactivateBackup(args[0]); err != nil {
@@ -207,7 +293,7 @@ func newBackupCmd() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "delete <snapshot-name>",
-			Short: "Delete a snapshot and its related EFI/GRUB artifacts",
+			Short: "Delete a snapshot and its related EFI/bootloader artifacts",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if err := tui.DeleteBackup(args[0]); err != nil {
@@ -219,7 +305,7 @@ func newBackupCmd() *cobra.Command {
 		},
 		&cobra.Command{
 			Use:   "recovery <snapshot-name>",
-			Short: "Print GRUB recovery commands for an activated snapshot",
+			Short: "Print bootloader recovery commands for an activated snapshot",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				commands, err := tui.RecoveryCommands(args[0])
@@ -288,6 +374,60 @@ func runTUI() error {
 		return err
 	}
 	return nil
+}
+
+func requireRiskAcknowledgement() error {
+	if riskAccepted || riskAcceptedFromEnv() {
+		return nil
+	}
+	if !stdinIsTerminal() {
+		return fmt.Errorf("risk acknowledgement required; rerun with --yes-i-understand or %s=1", riskAcceptEnv)
+	}
+	fmt.Fprintln(os.Stderr, "bootrecov modifies boot-critical files and can make a system unbootable.")
+	fmt.Fprintln(os.Stderr, "There is no warranty. You use this software entirely at your own risk.")
+	fmt.Fprintf(os.Stderr, "Type %q to continue: ", riskAcceptPhrase)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(line) != riskAcceptPhrase {
+		return fmt.Errorf("risk acknowledgement was not accepted")
+	}
+	return nil
+}
+
+func riskAcceptedFromEnv() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(riskAcceptEnv))) {
+	case "1", "true", "yes", "y", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func stdinIsTerminal() bool {
+	info, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
+}
+
+func printBootloaderEntries() error {
+	entries, err := tui.ListGrubEntries()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Println("no bootloader entries found")
+		return nil
+	}
+	tw := newTabWriter()
+	fmt.Fprintln(tw, "ID\tNAME\tPATH")
+	for _, entry := range entries {
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", entry.ID, entry.Name, entry.BackupPath)
+	}
+	return tw.Flush()
 }
 
 func newTabWriter() *tabwriter.Writer {

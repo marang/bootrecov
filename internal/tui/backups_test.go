@@ -28,8 +28,8 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
-	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldRequireEFIMount, oldCreateImage, oldStatfs, oldMountInfo :=
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, RequireEFIMount, createModuleImageFunc, statfsFunc, mountInfoPath
+	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldRequireEFIMount, oldCreateImage, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, RequireEFIMount, createModuleImageFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
 	GrubCfgOutput = filepath.Join(filepath.Dir(grub), "grub.cfg")
 	GrubMkconfig = ""
@@ -43,9 +43,19 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	RequireEFIMount = false
 	createModuleImageFunc = fakeCreateModuleImage
 	statfsFunc = syscall.Statfs
+	OSReleasePath = filepath.Join(filepath.Dir(grub), "os-release")
+	GrubDefaultPath = filepath.Join(filepath.Dir(grub), "default-grub")
+	PlatformOverride = ""
+	BootloaderOverride = ""
+	activePlatformID = PlatformArch
+	activePlatformName = "Arch Linux"
+	activeHookSupported = true
+	activeBootloaderID = BootloaderGRUB
+	activeBootloaderName = "GRUB"
+	activeWarnings = nil
 	t.Cleanup(func() {
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, RequireEFIMount, createModuleImageFunc, statfsFunc, mountInfoPath =
-			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldRequireEFIMount, oldCreateImage, oldStatfs, oldMountInfo
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, RequireEFIMount, createModuleImageFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
+			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldRequireEFIMount, oldCreateImage, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
 	})
 }
 
@@ -57,6 +67,201 @@ func fakeCreateModuleImage(src, dst string) error {
 		return err
 	}
 	return os.WriteFile(dst, []byte("squashfs"), 0o644)
+}
+
+func TestDetectPlatformFromOSRelease(t *testing.T) {
+	cases := []struct {
+		name string
+		data string
+		want string
+	}{
+		{name: "arch", data: "ID=arch\nPRETTY_NAME=\"Arch Linux\"\n", want: PlatformArch},
+		{name: "ubuntu", data: "ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME=\"Ubuntu 24.04\"\n", want: PlatformUbuntu},
+		{name: "debian-like", data: "ID=pop\nID_LIKE=\"ubuntu debian\"\n", want: PlatformUbuntu},
+		{name: "unknown", data: "ID=void\n", want: "void"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _ := detectPlatformFromOSRelease(parseOSRelease([]byte(tc.data)))
+			if got != tc.want {
+				t.Fatalf("platform=%q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestConfigureDetectedEnvironmentHonorsOverrides(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	PlatformOverride = PlatformUbuntu
+	BootloaderOverride = BootloaderGRUB
+
+	info := ConfigureDetectedEnvironment()
+	if info.PlatformID != PlatformUbuntu {
+		t.Fatalf("expected ubuntu platform, got %#v", info)
+	}
+	if info.BootloaderID != BootloaderGRUB || !info.BootloaderSupported {
+		t.Fatalf("expected supported grub bootloader, got %#v", info)
+	}
+	if info.HookSupported {
+		t.Fatalf("ubuntu hooks should not be implemented in first adapter cut: %#v", info)
+	}
+}
+
+func TestConfigureDetectedEnvironmentWarningsAreIdempotent(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	PlatformOverride = PlatformUbuntu
+	BootloaderOverride = BootloaderSystemdBoot
+
+	first := ConfigureDetectedEnvironment()
+	second := ConfigureDetectedEnvironment()
+
+	if len(first.Warnings) != 2 {
+		t.Fatalf("first warnings=%#v", first.Warnings)
+	}
+	if len(second.Warnings) != 2 {
+		t.Fatalf("second warnings should not duplicate stale warnings: %#v", second.Warnings)
+	}
+}
+
+func TestApplyEnvironmentOverridesFromEnv(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	espRoot := filepath.Join(filepath.Dir(efi), "esp")
+	t.Setenv("BOOTRECOV_PLATFORM", "ubuntu")
+	t.Setenv("BOOTRECOV_BOOTLOADER", "systemdboot")
+	t.Setenv("BOOTRECOV_BOOT_DIR", filepath.Join(filepath.Dir(boot), "custom-boot"))
+	t.Setenv("BOOTRECOV_ESP_DIR", espRoot)
+	t.Setenv("BOOTRECOV_BACKUP_PROFILE", "minimal")
+
+	ApplyEnvironmentOverridesFromEnv()
+
+	if PlatformOverride != PlatformUbuntu {
+		t.Fatalf("platform override=%q", PlatformOverride)
+	}
+	if BootloaderOverride != BootloaderSystemdBoot {
+		t.Fatalf("bootloader override=%q", BootloaderOverride)
+	}
+	if BootDir != filepath.Join(filepath.Dir(boot), "custom-boot") {
+		t.Fatalf("boot dir override=%q", BootDir)
+	}
+	if EfiDir != filepath.Join(espRoot, "bootrecov-snapshots") {
+		t.Fatalf("efi mirror override=%q", EfiDir)
+	}
+	if BackupProfile != "minimal" {
+		t.Fatalf("backup profile=%q", BackupProfile)
+	}
+}
+
+func TestConfigureDetectedEnvironmentDetectsSystemdBootUnsupported(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info := ConfigureDetectedEnvironment()
+	if info.BootloaderID != BootloaderSystemdBoot {
+		t.Fatalf("expected systemd-boot detection, got %#v", info)
+	}
+	if info.BootloaderSupported {
+		t.Fatalf("systemd-boot should be detected but unsupported in first adapter cut: %#v", info)
+	}
+}
+
+func TestConfigureDetectedEnvironmentPrefersSystemdBootOverWeakGRUBSignal(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, GrubDefaultPath)
+
+	info := ConfigureDetectedEnvironment()
+	if info.BootloaderID != BootloaderSystemdBoot {
+		t.Fatalf("expected systemd-boot to win over weak GRUB signal, got %#v", info)
+	}
+}
+
+func TestConfigureDetectedEnvironmentRejectsAmbiguousBootloaderSignals(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, GrubCfgOutput)
+
+	info := ConfigureDetectedEnvironment()
+	if info.BootloaderID != BootloaderUnknown || info.BootloaderSupported {
+		t.Fatalf("expected ambiguous bootloader to be unsupported unknown, got %#v", info)
+	}
+}
+
+func TestDetectBootDirFromMountInfoArtifacts(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	detectedBoot := filepath.Join(filepath.Dir(boot), "custom-boot")
+	writeFile(t, filepath.Join(detectedBoot, "vmlinuz-linux"))
+	writeFile(t, filepath.Join(detectedBoot, "initramfs-linux.img"))
+	BootDir = filepath.Join(filepath.Dir(boot), "missing-boot")
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	content := fmt.Sprintf("35 24 8:2 / %s rw,relatime - ext4 /dev/sda1 rw\n", detectedBoot)
+	if err := os.WriteFile(mountInfoPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := detectBootDir(); got != detectedBoot {
+		t.Fatalf("detectBootDir=%q want %q", got, detectedBoot)
+	}
+}
+
+func TestDetectESPRootFromVFATMountInfo(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	espRoot := filepath.Join(filepath.Dir(boot), "my-efi")
+	if err := os.MkdirAll(filepath.Join(espRoot, "EFI"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	content := fmt.Sprintf("36 24 8:3 / %s rw,relatime - vfat /dev/sda2 rw\n", espRoot)
+	if err := os.WriteFile(mountInfoPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := detectESPRoot(); got != espRoot {
+		t.Fatalf("detectESPRoot=%q want %q", got, espRoot)
+	}
+}
+
+func TestDetectESPRootRejectsUnmarkedFATMount(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	usbRoot := filepath.Join(filepath.Dir(boot), "usb-stick")
+	if err := os.MkdirAll(usbRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	content := fmt.Sprintf("36 24 8:3 / %s rw,relatime - vfat /dev/sdb1 rw\n", usbRoot)
+	if err := os.WriteFile(mountInfoPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := detectESPRoot(); got != "" {
+		t.Fatalf("unmarked FAT mount should not be detected as ESP, got %q", got)
+	}
+}
+
+func TestBootTreeExcludesHandleESPAtBootRoot(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	BootDir = filepath.Join(filepath.Dir(boot), "esp-as-boot")
+	EfiDir = filepath.Join(BootDir, "bootrecov-snapshots")
+
+	patterns := bootTreeRcloneExcludePatterns()
+	if !containsString(patterns, "bootrecov-snapshots/**") {
+		t.Fatalf("expected EFI mirror exclude for ESP-at-/boot layout, got %#v", patterns)
+	}
 }
 
 func writeFile(t *testing.T, path string) {
@@ -323,6 +528,18 @@ func TestAddGrubEntryRejectsStaleEFIMirrorMissingBootArtifacts(t *testing.T) {
 	}
 }
 
+func TestBootloaderOperationsRejectUnsupportedSystemdBoot(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	activeBootloaderID = BootloaderSystemdBoot
+	activeBootloaderName = "systemd-boot"
+
+	err := ActivateBackup("anything")
+	if err == nil || !strings.Contains(err.Error(), "not supported yet") {
+		t.Fatalf("expected unsupported bootloader error, got %v", err)
+	}
+}
+
 func TestCreateBootBackupNowSkipsRecursiveEfiBackupCopy(t *testing.T) {
 	boot, snap, _, grub := setupDirs(t)
 	efi := filepath.Join(boot, "efi", "bootrecov-snapshots")
@@ -414,7 +631,7 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "Exec = /usr/bin/bootrecov backup-now") {
+	if !strings.Contains(text, "Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov backup-now") {
 		t.Fatalf("unexpected hook content: %s", text)
 	}
 	if !strings.Contains(text, "Target = linux*") || !strings.Contains(text, "Target = grub") {
@@ -429,6 +646,19 @@ func TestInstallPacmanHookRejectsWhitespacePath(t *testing.T) {
 	err := InstallPacmanHook("/usr/local/bin/boot recov")
 	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
 		t.Fatalf("expected whitespace path error, got %v", err)
+	}
+}
+
+func TestInstallPacmanHookRejectsUbuntuUntilAptHookExists(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	activePlatformID = PlatformUbuntu
+	activePlatformName = "Ubuntu"
+	activeHookSupported = false
+
+	err := InstallPacmanHook("/usr/bin/bootrecov")
+	if err == nil || !strings.Contains(err.Error(), "apt/dpkg hook support is planned") {
+		t.Fatalf("expected planned apt hook error, got %v", err)
 	}
 }
 

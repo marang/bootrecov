@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"bufio"
-	"bytes"
 	"crypto/sha1"
 	"fmt"
 	"io"
@@ -12,7 +10,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -113,6 +110,9 @@ func CreateBootBackupNow() (BootBackup, error) {
 }
 
 func InstallPacmanHook(executablePath string) error {
+	if err := ensurePlatformHookSupported(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(executablePath) == "" {
 		executablePath = defaultHookExecutablePath()
 	}
@@ -143,7 +143,7 @@ Target = systemd
 [Action]
 Description = Creating bootrecov snapshot before boot-critical package transaction...
 When = PreTransaction
-Exec = %s backup-now
+Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s backup-now
 `, executablePath)
 }
 
@@ -159,6 +159,9 @@ func defaultHookExecutablePath() string {
 
 func CheckRuntimeDependencies() error {
 	var missing []string
+	if err := ensureSupportedBootloader(); err != nil {
+		missing = append(missing, err.Error())
+	}
 	if RequireRclone {
 		if strings.TrimSpace(RcloneBin) == "" {
 			missing = append(missing, "rclone (not configured)")
@@ -166,7 +169,7 @@ func CheckRuntimeDependencies() error {
 			missing = append(missing, fmt.Sprintf("%s (required for snapshot and EFI sync)", RcloneBin))
 		}
 	}
-	if AutoUpdateGrub {
+	if AutoUpdateGrub && currentBootloaderID() == BootloaderGRUB {
 		if strings.TrimSpace(GrubMkconfig) == "" {
 			missing = append(missing, "grub-mkconfig (not configured)")
 		} else if _, err := exec.LookPath(GrubMkconfig); err != nil {
@@ -189,6 +192,9 @@ func CheckRuntimeDependencies() error {
 // RefreshBackupsAndGrub loads current backups and GRUB entries without
 // modifying backup directories or GRUB content.
 func RefreshBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
+	if err := ensureSupportedBootloader(); err != nil {
+		return nil, nil, err
+	}
 	backups, err := DiscoverBackups()
 	if err != nil {
 		return nil, nil, err
@@ -206,6 +212,9 @@ func RefreshBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 // - refreshes active EFI mirrors from snapshot source
 // - removes stale GRUB entries
 func SyncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
+	if err := ensureSupportedBootloader(); err != nil {
+		return nil, nil, err
+	}
 	backups, err := DiscoverBackups()
 	if err != nil {
 		return nil, nil, err
@@ -897,12 +906,7 @@ func ensureEFIMountAvailable() error {
 }
 
 func estimateBackupBytes() int64 {
-	excludes := []string{
-		filepath.Join(BootDir, "efi"),
-		filepath.Join(BootDir, "efi", "bootrecov-snapshots"),
-		filepath.Join(BootDir, "efi", "boot-backups"),
-	}
-	size := dirSizeBytesWithExcludes(BootDir, excludes)
+	size := dirSizeBytesWithExcludes(BootDir, bootTreeAbsoluteExcludes())
 	size += estimateCurrentRootModuleBytes()
 	if size <= 0 {
 		return 64 * 1024 * 1024
@@ -990,11 +994,57 @@ func maxBackupCountFromFree(freeBytes, estimate int64) int64 {
 }
 
 func copyBootSourceToSnapshot(snapshotTarget string) error {
-	excludes := []string{"efi/**", "efi/bootrecov-snapshots/**", "efi/boot-backups/**"}
+	excludes := bootTreeRcloneExcludePatterns()
 	if strings.EqualFold(strings.TrimSpace(BackupProfile), "minimal") {
 		return syncDirContentsWithFilters(BootDir, snapshotTarget, excludes, minimalBootIncludePatterns())
 	}
 	return syncDirContentsWithExcludes(BootDir, snapshotTarget, excludes)
+}
+
+func bootTreeAbsoluteExcludes() []string {
+	excludes := []string{
+		filepath.Join(BootDir, "efi"),
+		filepath.Join(BootDir, "efi", "bootrecov-snapshots"),
+		filepath.Join(BootDir, "efi", "boot-backups"),
+	}
+	if rel, ok := cleanRelativeChild(BootDir, EfiDir); ok {
+		excludes = append(excludes, filepath.Join(BootDir, rel))
+	}
+	return excludes
+}
+
+func bootTreeRcloneExcludePatterns() []string {
+	excludes := []string{"efi/**", "efi/bootrecov-snapshots/**", "efi/boot-backups/**"}
+	if rel, ok := cleanRelativeChild(BootDir, EfiDir); ok {
+		excludes = append(excludes, filepath.ToSlash(rel)+"/**")
+	}
+	return uniqueStrings(excludes)
+}
+
+func cleanRelativeChild(root, child string) (string, bool) {
+	root = filepath.Clean(root)
+	child = filepath.Clean(child)
+	if root == child {
+		return "", false
+	}
+	rel, err := filepath.Rel(root, child)
+	if err != nil || rel == "." || rel == "" || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || rel == ".." || filepath.IsAbs(rel) {
+		return "", false
+	}
+	return rel, true
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, value := range values {
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func minimalBootIncludePatterns() []string {
@@ -1008,421 +1058,12 @@ func minimalBootIncludePatterns() []string {
 	}
 }
 
-func grubInitrdArgs(backupPath string, microcodes []string, initramfs string) string {
-	args := make([]string, 0, len(microcodes)+1)
-	for _, mc := range microcodes {
-		args = append(args, filepath.ToSlash(filepath.Join(backupPath, mc)))
-	}
-	args = append(args, filepath.ToSlash(filepath.Join(backupPath, initramfs)))
-	return strings.Join(args, " ")
-}
-
-type mountInfoEntry struct {
-	mountPoint string
-}
-
-func grubVisiblePath(hostPath string) string {
-	clean := filepath.Clean(hostPath)
-	if mountPoint, err := findMountPoint(clean); err == nil && mountPoint != "" {
-		if rel, relErr := filepath.Rel(mountPoint, clean); relErr == nil {
-			if rel == "." {
-				return "/"
-			}
-			return "/" + filepath.ToSlash(rel)
-		}
-	}
-
-	for _, mountRoot := range []string{filepath.Clean(EfiDir), filepath.Clean(BootDir)} {
-		if clean == mountRoot {
-			return "/"
-		}
-		prefix := mountRoot + string(os.PathSeparator)
-		if strings.HasPrefix(clean, prefix) {
-			return "/" + filepath.ToSlash(strings.TrimPrefix(clean, prefix))
-		}
-	}
-
-	return filepath.ToSlash(clean)
-}
-
-func findMountPoint(path string) (string, error) {
-	entries, err := readMountInfo()
-	if err != nil {
-		return "", err
-	}
-
-	path = filepath.Clean(path)
-	best := ""
-	for _, entry := range entries {
-		mountPoint := filepath.Clean(entry.mountPoint)
-		if path != mountPoint && !strings.HasPrefix(path, mountPoint+string(os.PathSeparator)) {
-			continue
-		}
-		if len(mountPoint) > len(best) {
-			best = mountPoint
-		}
-	}
-	if best == "" {
-		return "", fmt.Errorf("no mount point found for %s", path)
-	}
-	return best, nil
-}
-
-func readMountInfo() ([]mountInfoEntry, error) {
-	data, err := os.ReadFile(mountInfoPath)
-	if err != nil {
-		return nil, err
-	}
-
-	var entries []mountInfoEntry
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		entry, ok := parseMountInfoLine(scanner.Text())
-		if ok {
-			entries = append(entries, entry)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func parseMountInfoLine(line string) (mountInfoEntry, bool) {
-	parts := strings.Split(line, " - ")
-	if len(parts) != 2 {
-		return mountInfoEntry{}, false
-	}
-
-	fields := strings.Fields(parts[0])
-	if len(fields) < 5 {
-		return mountInfoEntry{}, false
-	}
-
-	return mountInfoEntry{
-		mountPoint: decodeMountInfoPath(fields[4]),
-	}, true
-}
-
-func decodeMountInfoPath(s string) string {
-	replacer := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
-	out := replacer.Replace(s)
-	if !strings.Contains(out, `\`) {
-		return out
-	}
-
-	var b strings.Builder
-	for i := 0; i < len(out); i++ {
-		if out[i] == '\\' && i+3 < len(out) {
-			if v, err := strconv.ParseInt(out[i+1:i+4], 8, 32); err == nil {
-				b.WriteByte(byte(v))
-				i += 3
-				continue
-			}
-		}
-		b.WriteByte(out[i])
-	}
-	return b.String()
-}
-
-// AddGrubEntry adds one GRUB menuentry for the EFI copy of a fully synced backup.
-func AddGrubEntry(b BootBackup) error {
-	name := b.Name
-	if name == "" {
-		name = filepath.Base(filepath.Clean(b.Path))
-	}
-	name = strings.TrimSpace(name)
-	if err := validateBackupName(name); err != nil {
-		return err
-	}
-
-	canonical := buildBackupFromName(name)
-	refreshBackupCompleteness(&canonical)
-	if !canonical.HasSnapshot || !canonical.HasEFI || !canonical.InSync {
-		return fmt.Errorf("backup %q is not activated in EFI (press 'g' in TUI to activate)", name)
-	}
-	if !canonical.HasKernel || !canonical.HasInitramfs {
-		return fmt.Errorf("backup %q is incomplete", canonical.Path)
-	}
-	if err := validateRootModuleCompatibility(canonical); err != nil {
-		return err
-	}
-	if err := ensureEFIMountAvailable(); err != nil {
-		return err
-	}
-
-	displayPath := canonical.EFIPath
-	grubPath := grubVisiblePath(canonical.EFIPath)
-	id := backupIDForName(name)
-	exists, err := grubEntryExistsByID(id)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return nil
-	}
-
-	if err := ensureGrubFile(); err != nil {
-		return err
-	}
-	original, err := os.ReadFile(GrubCustom)
-	if err != nil {
-		return err
-	}
-	st, err := os.Stat(GrubCustom)
-	if err != nil {
-		return err
-	}
-	perm := st.Mode().Perm() | 0o111
-
-	cmdline := currentKernelCmdline()
-	if !strings.Contains(cmdline, kernelCmdlineMarker) {
-		cmdline = strings.TrimSpace(cmdline + " " + kernelCmdlineMarker + id)
-	}
-	entry := fmt.Sprintf("cat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n"+
-		"    search --file --set=root %s/%s\n"+
-		"    linux %s/%s %s\n"+
-		"    initrd %s\n"+
-		"}\nEOF\n",
-		displayPath, id,
-		grubPath, canonical.KernelImage,
-		grubPath, canonical.KernelImage, cmdline,
-		grubInitrdArgs(grubPath, canonical.MicrocodeImages, canonical.InitramfsImage))
-
-	if err := os.WriteFile(GrubCustom, append(append([]byte{}, original...), []byte(entry)...), perm); err != nil {
-		return err
-	}
-	if err := updateGrubConfig(); err != nil {
-		_ = os.WriteFile(GrubCustom, original, perm)
-		return err
-	}
-	return nil
-}
-
-func grubEntryExistsByID(id string) (bool, error) {
-	entries, err := ListGrubEntries()
-	if err != nil {
-		return false, err
-	}
-	for _, e := range entries {
-		if e.ID == id {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func currentKernelCmdline() string {
-	data, err := os.ReadFile("/proc/cmdline")
-	if err != nil {
-		return "rw"
-	}
-	fields := strings.Fields(string(data))
-	filtered := make([]string, 0, len(fields))
-	for _, f := range fields {
-		if strings.HasPrefix(f, "BOOT_IMAGE=") || strings.HasPrefix(f, "initrd=") {
-			continue
-		}
-		filtered = append(filtered, f)
-	}
-	if len(filtered) == 0 {
-		return "rw"
-	}
-	return strings.Join(filtered, " ")
-}
-
-func ensureGrubFile() error {
-	data, err := os.ReadFile(GrubCustom)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return os.WriteFile(GrubCustom, []byte(grubHeader), 0o755)
-		}
-		return err
-	}
-	if !bytes.HasPrefix(data, []byte(grubHeader)) {
-		st, statErr := os.Stat(GrubCustom)
-		if statErr != nil {
-			return statErr
-		}
-		perm := st.Mode().Perm() | 0o111
-		return os.WriteFile(GrubCustom, append([]byte(grubHeader), data...), perm)
-	}
-	return nil
-}
-
-// RemoveGrubEntry removes the entry block matching the GRUB id.
-func RemoveGrubEntry(id string) error {
-	data, err := os.ReadFile(GrubCustom)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	st, err := os.Stat(GrubCustom)
-	if err != nil {
-		return err
-	}
-	perm := st.Mode().Perm() | 0o111
-
-	lines := strings.Split(string(data), "\n")
-	var out []string
-	skip := false
-	for _, l := range lines {
-		if skip {
-			if strings.TrimSpace(l) == "EOF" {
-				skip = false
-			}
-			continue
-		}
-		if strings.Contains(l, id) {
-			if len(out) > 0 && strings.HasPrefix(strings.TrimSpace(out[len(out)-1]), "cat <<'EOF'") {
-				out = out[:len(out)-1]
-			}
-			skip = true
-			continue
-		}
-		out = append(out, l)
-	}
-	if err := os.WriteFile(GrubCustom, []byte(strings.Join(out, "\n")), perm); err != nil {
-		return err
-	}
-	if err := updateGrubConfig(); err != nil {
-		_ = os.WriteFile(GrubCustom, data, perm)
-		return err
-	}
-	return nil
-}
-
-// ListGrubEntries parses GrubCustom and returns bootrecov entries.
-func ListGrubEntries() ([]GrubEntry, error) {
-	data, err := os.ReadFile(GrubCustom)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return []GrubEntry{}, nil
-		}
-		return nil, err
-	}
-	var entries []GrubEntry
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if entry, ok := parseBootrecovMenuentry(line); ok {
-			entries = append(entries, entry)
-		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return entries, nil
-}
-
-func parseBootrecovMenuentry(line string) (GrubEntry, bool) {
-	const prefix = "menuentry 'Bootrecov "
-	const middle = "' --id "
-	if !strings.HasPrefix(line, prefix) {
-		return GrubEntry{}, false
-	}
-	rest := strings.TrimPrefix(line, prefix)
-	titleEnd := strings.Index(rest, middle)
-	if titleEnd == -1 {
-		return GrubEntry{}, false
-	}
-	backupPath := rest[:titleEnd]
-	idPart := rest[titleEnd+len(middle):]
-	idEnd := strings.Index(idPart, " {")
-	if idEnd == -1 {
-		return GrubEntry{}, false
-	}
-	id := strings.TrimSpace(idPart[:idEnd])
-	if id == "" || !strings.HasPrefix(id, "bootrecov-") {
-		return GrubEntry{}, false
-	}
-	return GrubEntry{
-		ID:         id,
-		BackupPath: backupPath,
-		Name:       filepath.Base(backupPath),
-	}, true
-}
-
-func removeStaleGrubEntries(backups []BootBackup, preserveByName map[string]struct{}) error {
-	valid := map[string]string{}
-	for _, b := range backups {
-		if _, keep := preserveByName[b.Name]; keep {
-			valid[backupIDForName(b.Name)] = b.EFIPath
-			continue
-		}
-		if IsBootReady(b) {
-			valid[backupIDForName(b.Name)] = b.EFIPath
-		}
-	}
-	entries, err := ListGrubEntries()
-	if err != nil {
-		return err
-	}
-	for _, e := range entries {
-		expectedPath, ok := valid[e.ID]
-		if !ok || e.BackupPath != expectedPath {
-			if err := RemoveGrubEntry(e.ID); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-func markGrubFlags(backups []BootBackup, entries []GrubEntry) {
-	ids := map[string]struct{}{}
-	for _, e := range entries {
-		ids[e.ID] = struct{}{}
-	}
-	for i := range backups {
-		_, ok := ids[backupIDForName(backups[i].Name)]
-		backups[i].GrubEntryExists = ok
-	}
-}
-
-func backupIDForName(name string) string {
-	return backupID(filepath.Join(EfiDir, strings.TrimSpace(name)))
-}
-
-func RecoveryCommands(name string) (string, error) {
-	name = strings.TrimSpace(name)
-	if err := validateBackupName(name); err != nil {
-		return "", err
-	}
-	canonical := buildBackupFromName(name)
-	refreshBackupCompleteness(&canonical)
-	if !canonical.HasSnapshot {
-		return "", fmt.Errorf("snapshot %q does not exist", name)
-	}
-	if !canonical.HasEFI {
-		return "", fmt.Errorf("snapshot %q is not activated in EFI (press 'g' in TUI to activate)", name)
-	}
-	if !canonical.HasKernel || !canonical.HasInitramfs {
-		return "", fmt.Errorf("snapshot %q is incomplete", name)
-	}
-	if err := validateRootModuleCompatibility(canonical); err != nil {
-		return "", err
-	}
-
-	grubPath := grubVisiblePath(canonical.EFIPath)
-	id := backupIDForName(canonical.Name)
-	cmdline := currentKernelCmdline()
-	if !strings.Contains(cmdline, kernelCmdlineMarker) {
-		cmdline = strings.TrimSpace(cmdline + " " + kernelCmdlineMarker + id)
-	}
-	return strings.Join([]string{
-		fmt.Sprintf("search --file --set=root %s/%s", grubPath, canonical.KernelImage),
-		fmt.Sprintf("linux %s/%s %s", grubPath, canonical.KernelImage, cmdline),
-		fmt.Sprintf("initrd %s", grubInitrdArgs(grubPath, canonical.MicrocodeImages, canonical.InitramfsImage)),
-		"boot",
-	}, "\n"), nil
-}
-
 // ActivateBackup copies a snapshot to EFI (after free-space check) and ensures
 // a matching GRUB entry exists.
 func ActivateBackup(name string) error {
+	if err := ensureSupportedBootloader(); err != nil {
+		return err
+	}
 	name = strings.TrimSpace(name)
 	if err := validateBackupName(name); err != nil {
 		return err
@@ -1455,6 +1096,9 @@ func ActivateBackup(name string) error {
 // DeactivateBackup removes the GRUB entry and optional EFI mirror, while
 // keeping the snapshot in SnapshotDir.
 func DeactivateBackup(name string) error {
+	if err := ensureSupportedBootloader(); err != nil {
+		return err
+	}
 	name = strings.TrimSpace(name)
 	if err := validateBackupName(name); err != nil {
 		return err
@@ -1468,27 +1112,6 @@ func DeactivateBackup(name string) error {
 		}
 	}
 	return os.RemoveAll(filepath.Join(EfiDir, name))
-}
-
-func updateGrubConfig() error {
-	if !AutoUpdateGrub {
-		return nil
-	}
-	if strings.TrimSpace(GrubMkconfig) == "" {
-		return fmt.Errorf("grub config regeneration is enabled but grub-mkconfig is not configured")
-	}
-	if strings.TrimSpace(GrubCfgOutput) == "" {
-		return fmt.Errorf("grub config regeneration is enabled but grub.cfg output path is not configured")
-	}
-	if _, err := exec.LookPath(GrubMkconfig); err != nil {
-		return fmt.Errorf("grub config regeneration failed: %s not found in PATH", GrubMkconfig)
-	}
-	cmd := exec.Command(GrubMkconfig, "-o", GrubCfgOutput)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("grub config regeneration failed: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	return nil
 }
 
 func syncDirContents(src, dst string) error {

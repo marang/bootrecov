@@ -8,6 +8,11 @@ Bootrecov is intentionally conservative because it writes to boot-critical locat
 - EFI mirrors are created only when a snapshot is explicitly activated.
 - Activation validates snapshot names before path-sensitive operations.
 - Activation verifies that the EFI root is mounted before copying files.
+- Unsupported bootloaders are detected but rejected before bootloader mutations.
+- Ambiguous bootloader signals are rejected instead of enabling a potentially wrong backend.
+- ESP auto-detection accepts only common ESP mount paths or FAT mounts with bootloader markers.
+- Unsupported package hook platforms return an explicit error instead of installing partial hooks.
+- TUI and CLI invocations require explicit risk acknowledgement via prompt, flag, or environment variable.
 - Activation refuses a snapshot when the kernel version is known and `/usr/lib/modules/<version>` is missing.
 - Activation does not write to `/usr/lib/modules`.
 - Internal `.bootrecov` metadata is excluded from EFI mirrors.
@@ -24,6 +29,8 @@ Normal use may write to:
 - `/boot/grub/grub.cfg`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
 
+On Ubuntu/Debian, Bootrecov can detect the platform and use the GRUB backend, but it does not install apt/dpkg hooks yet.
+
 ## Recommended Use
 
 - Keep a rescue USB available.
@@ -38,3 +45,5 @@ Normal use may write to:
 - Bootrecov does not automatically mount or restore archived module SquashFS images.
 - Bootrecov does not detect failed boots automatically.
 - Bootrecov does not prune snapshots automatically.
+- Bootrecov does not manage systemd-boot entries yet.
+- Bootrecov does not install apt/dpkg hooks yet.
