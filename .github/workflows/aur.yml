@@ -19,7 +19,7 @@ jobs:
       - name: Install deps
         run: |
           pacman -Syu --noconfirm --needed \
-            base-devel git go pacman-contrib openssh curl sudo
+            base-devel git go pacman-contrib openssh curl sudo squashfs-tools
 
       - name: Checkout source repo
         uses: actions/checkout@v5
@@ -46,6 +46,10 @@ jobs:
       - name: Generate .SRCINFO
         run: |
           sudo -u build makepkg --printsrcinfo > .SRCINFO
+
+      - name: Build AUR package
+        run: |
+          sudo -u build makepkg -Csf --noconfirm
 
       - name: Prepare SSH agent
         uses: webfactory/ssh-agent@v0.9.0

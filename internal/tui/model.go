@@ -308,6 +308,9 @@ func statusString(b BootBackup) string {
 	if !b.HasSnapshot {
 		return "Missing"
 	}
+	if hasKnownMissingRootModules(b) {
+		return "No modules"
+	}
 	if b.HasKernel && b.HasInitramfs {
 		return "OK"
 	}
@@ -358,10 +361,10 @@ func backupMetaSummary(b BootBackup) string {
 		efi = "on"
 	}
 	bootable := "no"
-	if b.HasKernel && b.HasInitramfs && b.HasSnapshot && b.HasEFI && b.InSync {
+	if IsBootReady(b) {
 		bootable = "yes"
 	}
-	return fmt.Sprintf("[ver:%s backup:%s size:%s efi:%s bootable:%s grub:%s ucode:%s]", kernel, date, size, efi, bootable, entry, micro)
+	return fmt.Sprintf("[ver:%s backup:%s size:%s efi:%s bootable:%s grub:%s modules:%s ucode:%s]", kernel, date, size, efi, bootable, entry, rootModuleStatus(b), micro)
 }
 
 func humanSize(bytes int64) string {

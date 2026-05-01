@@ -26,9 +26,15 @@ Important behavior:
 
 - new snapshots are created only in the snapshot source directory
 - EFI mirrors exist only for activated GRUB entries
+- snapshots contain `/boot` state plus an optional compressed SquashFS image of the matching `/usr/lib/modules/<kernel-version>` tree
+- module archives live under `.bootrecov/root-modules/<kernel-version>.sqfs` inside the snapshot source
+- module archives are not copied into EFI mirrors
+- activation must not write to `/usr/lib/modules` automatically
+- older kernel fallback entries require the matching `/usr/lib/modules/<kernel-version>` tree to still exist on the root filesystem
 - GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
 - GRUB config is regenerated with `grub-mkconfig -o /boot/grub/grub.cfg` after GRUB entry changes
 - reconcile removes inactive EFI mirrors
+- reconcile removes entries for snapshots whose kernel version is known but whose matching root module tree is missing
 - reconcile preserves an already-bootable GRUB entry if refresh of its active EFI mirror fails transiently
 
 ## Implemented Features
@@ -37,6 +43,8 @@ Important behavior:
 - TUI backup browser using Bubble Tea and Lip Gloss
 - Backup discovery, metadata inspection, and completeness checks
 - Snapshot creation from `/boot`
+- Snapshot-side SquashFS archiving of matching root kernel modules when available
+- Root module tree compatibility checks for activated kernel snapshots
 - EFI mirror activation and deactivation
 - GRUB entry add, remove, and parse
 - Recovery command generation for activated snapshots
@@ -98,6 +106,7 @@ Runtime assumptions:
 - EFI system layout
 - `rclone`
 - `grub-mkconfig`
+- `mksquashfs` from Arch package `squashfs-tools`
 
 The TUI performs a startup dependency check and exits early with a clear error if required runtime tools are missing.
 
@@ -115,7 +124,7 @@ Environment variable:
 - `BOOTRECOV_BACKUP_PROFILE=full`
 - `BOOTRECOV_BACKUP_PROFILE=minimal`
 
-`full` copies the full `/boot` tree while excluding recursive backup destinations.
+`full` copies the `/boot` tree while excluding the mounted ESP subtree such as `/boot/efi/**`, so firmware files are not duplicated into snapshots or active EFI mirrors.
 
 `minimal` currently includes:
 
@@ -149,6 +158,7 @@ These are not implemented and should not be described as current behavior:
 
 - automatic pruning of old snapshots
 - chroot or repair-shell workflows
+- full root filesystem or package rollback
 - boot failure detection from journald or reboot history
 - non-Linux support
 - release artifacts for `darwin` or `windows`
@@ -181,7 +191,7 @@ make test-bootvm-watch
 
 CI:
 
-- [`.github/workflows/go-tests.yml`](.github/workflows/go-tests.yml) runs `go test ./...`
+- [`.github/workflows/go-tests.yml`](.github/workflows/go-tests.yml) runs `make test`
 
 Release automation:
 

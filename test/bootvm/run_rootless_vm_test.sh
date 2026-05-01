@@ -10,6 +10,7 @@ BASE_IMAGE="${WORK_DIR}/ubuntu-noble-server-cloudimg-amd64.img"
 OVERLAY_IMAGE="${WORK_DIR}/bootvm-overlay.qcow2"
 SEED_IMAGE="${WORK_DIR}/seed.img"
 SERIAL_LOG="${WORK_DIR}/serial.log"
+SERIAL_SOCKET="${WORK_DIR}/serial.sock"
 PID_FILE="${WORK_DIR}/qemu.pid"
 OVMF_CODE_FILE="${WORK_DIR}/OVMF_CODE.fd"
 OVMF_VARS_FILE="${WORK_DIR}/OVMF_VARS.fd"
@@ -45,6 +46,7 @@ check_prereqs() {
   require_cmd ssh-keygen
   require_cmd timeout
   require_cmd curl
+  require_cmd socat
   if ! command -v cloud-localds >/dev/null 2>&1 && ! command -v genisoimage >/dev/null 2>&1; then
     missing+=("cloud-localds|genisoimage")
   fi
@@ -56,8 +58,8 @@ check_prereqs() {
     done
     echo >&2
     echo "Arch package hints:" >&2
-    echo "  sudo pacman -S --needed qemu-base openssh curl cloud-image-utils" >&2
-    echo "  # alternatively: sudo pacman -S --needed qemu-base openssh curl cdrkit" >&2
+    echo "  sudo pacman -S --needed qemu-base openssh curl cloud-image-utils socat" >&2
+    echo "  # alternatively: sudo pacman -S --needed qemu-base openssh curl cdrkit socat" >&2
     return 1
   fi
   echo "preflight OK: all required tools are installed."
@@ -230,7 +232,7 @@ ssh_probe() {
 }
 
 launch_qemu() {
-  rm -f "${PID_FILE}"
+  rm -f "${PID_FILE}" "${SERIAL_SOCKET}"
   qemu-system-x86_64 \
     -name bootrecov-bootvm \
     -m 2048 \
@@ -245,7 +247,8 @@ launch_qemu() {
     -display none \
     -monitor none \
     -no-shutdown \
-    -serial "file:${SERIAL_LOG}" \
+    -chardev "socket,id=serial0,path=${SERIAL_SOCKET},server=on,wait=off,logfile=${SERIAL_LOG},logappend=on,signal=off" \
+    -serial "chardev:serial0" \
     -pidfile "${PID_FILE}" \
     -daemonize >/tmp/bootrecov-qemu.log 2>&1
 }
@@ -383,7 +386,7 @@ if [[ ! -x "${SMOKE_BIN}" || "${SMOKE_SRC}" -nt "${SMOKE_BIN}" || "${ROOT_DIR}/i
 fi
 
 set_status "preparing-disks"
-rm -f "${OVERLAY_IMAGE}" "${SEED_IMAGE}" "${SERIAL_LOG}" "${PID_FILE}" "${OVMF_CODE_FILE}" "${OVMF_VARS_FILE}"
+rm -f "${OVERLAY_IMAGE}" "${SEED_IMAGE}" "${SERIAL_LOG}" "${SERIAL_SOCKET}" "${PID_FILE}" "${OVMF_CODE_FILE}" "${OVMF_VARS_FILE}"
 qemu-img create -f qcow2 -F qcow2 -b "${BASE_IMAGE}" "${OVERLAY_IMAGE}" >/dev/null
 prepare_ovmf
 
@@ -395,10 +398,16 @@ users:
     groups: [sudo]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: false
+    passwd: '\$6\$rounds=4096\$bootrecovtest\$98i5eNC9xLmuTJzMgE3P.YPA/3a.cAEcM917vKS/44ePDldWLQ2cBsQbQl1EnoQfPpEv9njH/YxyscStD4siY.'
     ssh_authorized_keys:
       - $(cat "${SSH_KEY}.pub")
 runcmd:
   - [ mkdir, -p, /boot/efi/bootrecov-snapshots ]
+  - [ mkdir, -p, /etc/systemd/system/serial-getty@ttyS0.service.d ]
+  - [ sh, -c, "printf '[Service]\\nExecStart=\\nExecStart=-/sbin/agetty --autologin ${VM_USER} --noclear %%I $TERM\\n' > /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf" ]
+  - [ systemctl, daemon-reload ]
+  - [ systemctl, restart, serial-getty@ttyS0.service ]
 EOF
 
 cat >"${WORK_DIR}/meta-data" <<EOF
@@ -465,6 +474,52 @@ print_bootrecov_entries() {
   ' "${file}" | sed "s/^/[${tag}] /"
 }
 
+wait_for_guest_path() {
+  local kind="$1"
+  local path="$2"
+  local deadline=$((SECONDS + 15))
+  while (( SECONDS < deadline )); do
+    case "${kind}" in
+      dir)
+        sudo test -d "${path}" && return 0
+        ;;
+      file)
+        sudo test -f "${path}" && return 0
+        ;;
+      *)
+        sudo test -e "${path}" && return 0
+        ;;
+    esac
+    sleep 1
+  done
+  return 1
+}
+
+run_setup_step() {
+  local label="$1"
+  local log_file="$2"
+  shift 2
+
+  echo "[guest] ${label} start"
+  "$@" >"${log_file}" 2>&1 &
+  local pid="$!"
+  local elapsed=0
+  while kill -0 "${pid}" 2>/dev/null; do
+    sleep 15
+    elapsed=$((elapsed + 15))
+    if kill -0 "${pid}" 2>/dev/null; then
+      echo "[guest] ${label} still running (${elapsed}s); latest log:"
+      sudo tail -n 6 "${log_file}" 2>/dev/null | sed "s/^/[guest-${label}] /" || true
+    fi
+  done
+  if ! wait "${pid}"; then
+    echo "[guest] ${label} failed; full log follows" >&2
+    sudo cat "${log_file}" >&2 || true
+    return 1
+  fi
+  echo "[guest] ${label} done"
+}
+
 echo "[guest] collecting boot artifacts"
 KERNEL_SRC="$(readlink -f /vmlinuz || true)"
 INITRD_SRC="$(readlink -f /initrd.img || true)"
@@ -480,18 +535,110 @@ if [[ -z "${KERNEL_SRC}" || -z "${INITRD_SRC}" ]]; then
 fi
 echo "[guest] setup start"
 sudo chmod +x /tmp/bootrecov
-sudo mkdir -p "${BACKUP_DIR}"
-sudo mkdir -p "${SNAPSHOT_DIR}"
+run_setup_step apt-update /tmp/bootrecov-apt-update.log sudo DEBIAN_FRONTEND=noninteractive apt-get update
+run_setup_step runtime-deps /tmp/bootrecov-runtime-deps.log sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends rclone squashfs-tools grub-common
+sudo mkdir -p /boot/grub
 sudo mkdir -p /etc/grub.d
 if [[ ! -f "${GRUB_CUSTOM}" ]]; then
   sudo sh -c 'printf "#!/bin/bash\n" > /etc/grub.d/41_bootrecov_snapshots'
 fi
 sudo chmod 755 /etc/grub.d/41_bootrecov_snapshots
+echo "[guest] setup done"
+
+echo "[guest] running real snapshot create for SquashFS module archive coverage"
+SNAP_NAME="$(sudo /tmp/bootrecov backup create | tail -n1 | tr -d '\r\n')"
+if [[ -z "${SNAP_NAME}" ]]; then
+  echo "[guest] bootrecov backup create did not return a snapshot name" >&2
+  exit 1
+fi
+REAL_SNAPSHOT_DIR="/var/backups/bootrecov-snapshots/${SNAP_NAME}"
+KERNEL_VERSION="$(uname -r)"
+MODULE_IMAGE="${REAL_SNAPSHOT_DIR}/.bootrecov/root-modules/${KERNEL_VERSION}.sqfs"
+if [[ ! -s "${MODULE_IMAGE}" ]]; then
+  echo "[guest] expected non-empty module SquashFS image: ${MODULE_IMAGE}" >&2
+  sudo find "${REAL_SNAPSHOT_DIR}" -maxdepth 4 -type f -o -type d | sort | sed 's/^/[snapshot-tree] /' || true
+  exit 1
+fi
+sudo unsquashfs -ll "${MODULE_IMAGE}" >/tmp/bootrecov-module-sqfs-list.log
+if ! sudo grep -q "modules.dep" /tmp/bootrecov-module-sqfs-list.log; then
+  echo "[guest] module SquashFS listing did not include expected module metadata" >&2
+  sudo sed -n '1,80p' /tmp/bootrecov-module-sqfs-list.log || true
+  exit 1
+fi
+echo "[guest] module SquashFS image created: ${MODULE_IMAGE}"
+
+echo "[guest] activating real snapshot and checking EFI excludes internal metadata"
+df -h /boot/efi | sed 's/^/[guest-efi-free-before-activate] /'
+sudo /tmp/bootrecov backup activate "${SNAP_NAME}" >/tmp/bootrecov-activate.log 2>&1 || {
+  echo "[guest] bootrecov backup activate failed"
+  sudo cat /tmp/bootrecov-activate.log || true
+  exit 1
+}
+EFI_STATE="$(sudo /tmp/bootrecov backup list | awk -v name="${SNAP_NAME}" '$1 == name {print $3}')"
+if [[ "${EFI_STATE}" != "yes" ]]; then
+  echo "[guest] expected activated snapshot to show EFI=yes in backup list" >&2
+  sudo /tmp/bootrecov backup list || true
+  sudo cat /tmp/bootrecov-activate.log || true
+  exit 1
+fi
+REAL_EFI_DIR="/boot/efi/bootrecov-snapshots/${SNAP_NAME}"
+if ! wait_for_guest_path dir "${REAL_EFI_DIR}"; then
+  echo "[guest] expected EFI mirror after activation: ${REAL_EFI_DIR}" >&2
+  sudo /tmp/bootrecov backup list || true
+  sudo cat /tmp/bootrecov-activate.log || true
+  echo "[guest] current EFI mirror tree:"
+  sudo find /boot/efi -maxdepth 4 -type d -o -type f | sort | sed 's/^/[efi-tree] /' || true
+  exit 1
+fi
+if [[ -e "${REAL_EFI_DIR}/.bootrecov" ]]; then
+  echo "[guest] internal .bootrecov metadata leaked into EFI mirror" >&2
+  sudo find "${REAL_EFI_DIR}/.bootrecov" -maxdepth 4 -print || true
+  exit 1
+fi
+echo "[guest] EFI mirror excludes .bootrecov metadata"
+sudo /tmp/bootrecov backup deactivate "${SNAP_NAME}" >/tmp/bootrecov-deactivate.log 2>&1 || {
+  echo "[guest] bootrecov backup deactivate failed"
+  sudo cat /tmp/bootrecov-deactivate.log || true
+  exit 1
+}
+df -h /boot/efi | sed 's/^/[guest-efi-free-after-deactivate] /'
+
+echo "[guest] checking archived previous-kernel module image does not permit unsafe activation"
+PREV_VERSION="6.0.0-bootrecov-e2e"
+PREV_SNAPSHOT="2026-prev-kernel-missing-modules"
+PREV_SNAPSHOT_DIR="/var/backups/bootrecov-snapshots/${PREV_SNAPSHOT}"
+sudo rm -rf "${PREV_SNAPSHOT_DIR}" "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" "/usr/lib/modules/${PREV_VERSION}"
+sudo mkdir -p "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules"
+sudo cp -f "${KERNEL_SRC}" "${PREV_SNAPSHOT_DIR}/vmlinuz-${PREV_VERSION}"
+sudo cp -f "${INITRD_SRC}" "${PREV_SNAPSHOT_DIR}/initrd.img-${PREV_VERSION}"
+sudo cp -f "${MODULE_IMAGE}" "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules/${PREV_VERSION}.sqfs"
+if sudo /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
+  echo "[guest] activation unexpectedly succeeded for missing previous-kernel module tree" >&2
+  sudo cat /tmp/bootrecov-prev-activate.log || true
+  exit 1
+fi
+if ! sudo grep -q "activation does not write to the root filesystem" /tmp/bootrecov-prev-activate.log; then
+  echo "[guest] previous-kernel activation failed for the wrong reason" >&2
+  sudo cat /tmp/bootrecov-prev-activate.log || true
+  exit 1
+fi
+if [[ -e "/usr/lib/modules/${PREV_VERSION}" ]]; then
+  echo "[guest] previous-kernel activation created /usr/lib/modules/${PREV_VERSION}, which is forbidden" >&2
+  exit 1
+fi
+if [[ -e "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" ]]; then
+  echo "[guest] previous-kernel activation created an EFI mirror despite missing root modules" >&2
+  exit 1
+fi
+echo "[guest] previous-kernel missing-module safety check passed"
+
+echo "[guest] preparing deterministic GRUB smoke snapshot"
+sudo mkdir -p "${BACKUP_DIR}"
+sudo mkdir -p "${SNAPSHOT_DIR}"
 sudo cp -f "${KERNEL_SRC}" "${BACKUP_DIR}/vmlinuz"
 sudo cp -f "${INITRD_SRC}" "${BACKUP_DIR}/initrd.img"
 sudo cp -f "${KERNEL_SRC}" "${SNAPSHOT_DIR}/vmlinuz"
 sudo cp -f "${INITRD_SRC}" "${SNAPSHOT_DIR}/initrd.img"
-echo "[guest] setup done"
 
 echo "[guest] grub before (bootrecov entries):"
 print_bootrecov_entries "${GRUB_CUSTOM}" "grub-before"

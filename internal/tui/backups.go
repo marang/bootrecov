@@ -16,29 +16,35 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode"
 )
 
 // BootBackup represents one logical backup snapshot stored in SnapshotDir.
 // An optional EFI mirror exists in EfiDir only when the snapshot is activated
 // for GRUB booting.
 type BootBackup struct {
-	Name            string
-	Path            string // Canonical path used for GRUB entries (EFI copy)
-	SnapshotPath    string
-	EFIPath         string
-	MetadataPath    string
-	HasSnapshot     bool
-	HasEFI          bool
-	InSync          bool
-	KernelImage     string
-	InitramfsImage  string
-	MicrocodeImages []string
-	KernelVersion   string
-	CreatedAt       time.Time
-	SizeBytes       int64
-	HasKernel       bool
-	HasInitramfs    bool
-	GrubEntryExists bool
+	Name               string
+	Path               string // Canonical path used for GRUB entries (EFI copy)
+	SnapshotPath       string
+	EFIPath            string
+	MetadataPath       string
+	HasSnapshot        bool
+	HasEFI             bool
+	InSync             bool
+	KernelImage        string
+	InitramfsImage     string
+	MicrocodeImages    []string
+	KernelVersion      string
+	RootModuleTree     string
+	RootModulesKnown   bool
+	HasRootModules     bool
+	ArchivedModuleTree string
+	HasArchivedModules bool
+	CreatedAt          time.Time
+	SizeBytes          int64
+	HasKernel          bool
+	HasInitramfs       bool
+	GrubEntryExists    bool
 }
 
 type GrubEntry struct {
@@ -48,27 +54,36 @@ type GrubEntry struct {
 }
 
 var (
-	BootDir        = "/boot"
-	SnapshotDir    = "/var/backups/bootrecov-snapshots"
-	EfiDir         = "/boot/efi/bootrecov-snapshots"
-	GrubCustom     = "/etc/grub.d/41_bootrecov_snapshots"
-	GrubCfgOutput  = "/boot/grub/grub.cfg"
-	GrubMkconfig   = "grub-mkconfig"
-	AutoUpdateGrub = true
-	PacmanHookPath = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
-	RcloneBin      = "rclone"
-	RequireRclone  = true
-	BackupProfile  = "full" // full|minimal
-	grubHeader     = "#!/bin/bash\n"
-	statfsFunc     = syscall.Statfs
-	mountInfoPath  = "/proc/self/mountinfo"
+	BootDir               = "/boot"
+	SnapshotDir           = "/var/backups/bootrecov-snapshots"
+	EfiDir                = "/boot/efi/bootrecov-snapshots"
+	GrubCustom            = "/etc/grub.d/41_bootrecov_snapshots"
+	GrubCfgOutput         = "/boot/grub/grub.cfg"
+	GrubMkconfig          = "grub-mkconfig"
+	AutoUpdateGrub        = true
+	RootModulesDir        = "/usr/lib/modules"
+	PacmanHookPath        = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
+	RcloneBin             = "rclone"
+	RequireRclone         = true
+	MksquashfsBin         = "mksquashfs"
+	RequireMksquashfs     = true
+	RequireEFIMount       = true
+	BackupProfile         = "full" // full|minimal
+	grubHeader            = "#!/bin/bash\n"
+	statfsFunc            = syscall.Statfs
+	mountInfoPath         = "/proc/self/mountinfo"
+	createModuleImageFunc = createSquashFSModuleImage
 )
 
 const (
-	backupNameCurrentDir = "."
-	backupNameParentDir  = ".."
-	kernelCmdlineMarker  = "bootrecov_entry="
+	backupNameCurrentDir  = "."
+	backupNameParentDir   = ".."
+	kernelCmdlineMarker   = "bootrecov_entry="
+	bootrecovMetadataRoot = ".bootrecov"
+	moduleArchiveRoot     = ".bootrecov/root-modules"
 )
+
+var backupNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // CreateBootBackupNow copies the current /boot tree to SnapshotDir.
 // EFI mirrors are created only when explicitly activated. The backup name is a
@@ -90,6 +105,10 @@ func CreateBootBackupNow() (BootBackup, error) {
 	}
 	created := buildBackupFromName(stamp)
 	refreshBackupCompleteness(&created)
+	if err := archiveRootModulesForSnapshot(&created); err != nil {
+		return BootBackup{}, err
+	}
+	refreshBackupCompleteness(&created)
 	return created, nil
 }
 
@@ -100,6 +119,9 @@ func InstallPacmanHook(executablePath string) error {
 	executablePath = filepath.Clean(strings.TrimSpace(executablePath))
 	if !filepath.IsAbs(executablePath) {
 		return fmt.Errorf("hook executable path must be absolute: %s", executablePath)
+	}
+	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
+		return fmt.Errorf("hook executable path must not contain whitespace: %q", executablePath)
 	}
 	if err := os.MkdirAll(filepath.Dir(PacmanHookPath), 0o755); err != nil {
 		return err
@@ -151,6 +173,13 @@ func CheckRuntimeDependencies() error {
 			missing = append(missing, fmt.Sprintf("%s (required to regenerate %s)", GrubMkconfig, GrubCfgOutput))
 		}
 	}
+	if RequireMksquashfs {
+		if strings.TrimSpace(MksquashfsBin) == "" {
+			missing = append(missing, "mksquashfs (not configured)")
+		} else if _, err := exec.LookPath(MksquashfsBin); err != nil {
+			missing = append(missing, fmt.Sprintf("%s (required to archive kernel modules)", MksquashfsBin))
+		}
+	}
 	if len(missing) == 0 {
 		return nil
 	}
@@ -191,12 +220,28 @@ func SyncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 			activeByName[e.Name] = struct{}{}
 		}
 	}
+	needsEFIMount := len(activeByName) > 0
+	if !needsEFIMount {
+		for _, b := range backups {
+			if b.HasEFI {
+				needsEFIMount = true
+				break
+			}
+		}
+	}
+	if needsEFIMount {
+		if err := ensureEFIMountAvailable(); err != nil {
+			return nil, nil, err
+		}
+	}
 	preserveGrubForName := map[string]struct{}{}
 	for i := range backups {
 		b := &backups[i]
 		if !b.HasSnapshot && b.HasEFI {
 			if rmErr := os.RemoveAll(b.EFIPath); rmErr != nil {
+				refreshBackupCompleteness(b)
 				b.InSync = false
+				continue
 			}
 			refreshBackupCompleteness(b)
 			continue
@@ -208,20 +253,24 @@ func SyncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 		_, isActivated := activeByName[b.Name]
 		if !isActivated && b.HasEFI {
 			if err := os.RemoveAll(b.EFIPath); err != nil {
+				refreshBackupCompleteness(b)
 				b.InSync = false
+				continue
 			} else {
 				b.HasEFI = false
 			}
 			refreshBackupCompleteness(b)
 			continue
 		}
-		wasBootable := b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs
+		wasBootable := IsBootReady(*b)
 		if isActivated {
 			if err := ensureEFIMirrorFromSnapshot(b); err != nil {
-				b.InSync = false
 				if wasBootable {
 					preserveGrubForName[b.Name] = struct{}{}
 				}
+				refreshBackupCompleteness(b)
+				b.InSync = false
+				continue
 			}
 		}
 		refreshBackupCompleteness(b)
@@ -265,7 +314,7 @@ func listBackupNames() ([]string, error) {
 			return nil, err
 		}
 		for _, e := range entries {
-			if e.IsDir() {
+			if e.IsDir() && validateBackupName(e.Name()) == nil {
 				nameSet[e.Name()] = struct{}{}
 			}
 		}
@@ -278,7 +327,22 @@ func listBackupNames() ([]string, error) {
 	return names, nil
 }
 
+func validateBackupName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("invalid backup name")
+	}
+	if filepath.IsAbs(name) || name != filepath.Base(name) || name == backupNameCurrentDir || name == backupNameParentDir {
+		return fmt.Errorf("invalid backup name: %q", name)
+	}
+	if !backupNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid backup name: %q", name)
+	}
+	return nil
+}
+
 func buildBackupFromName(name string) BootBackup {
+	name = strings.TrimSpace(name)
 	snapshotPath := filepath.Join(SnapshotDir, name)
 	efiPath := filepath.Join(EfiDir, name)
 	hasSnapshot := dirExists(snapshotPath)
@@ -307,24 +371,180 @@ func refreshBackupCompleteness(b *BootBackup) {
 	b.KernelImage, b.InitramfsImage = findKernelAndInitramfs(b.MetadataPath)
 	b.MicrocodeImages = findMicrocodeImages(b.MetadataPath)
 	b.KernelVersion = detectKernelVersion(b.MetadataPath, b.KernelImage, b.InitramfsImage)
+	if b.KernelVersion == "unknown" {
+		if archivedVersion := detectArchivedKernelVersion(b.SnapshotPath); archivedVersion != "" {
+			b.KernelVersion = archivedVersion
+		}
+	}
+	b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(b.KernelVersion)
+	b.ArchivedModuleTree, b.HasArchivedModules = detectArchivedModuleTree(b.SnapshotPath, b.KernelVersion)
 	b.CreatedAt = detectBackupTime(b.Name, b.SnapshotPath, b.EFIPath)
 	b.SizeBytes = dirSizeBytes(b.MetadataPath)
 	b.HasKernel = b.KernelImage != ""
 	b.HasInitramfs = b.InitramfsImage != ""
+	if b.HasSnapshot && b.HasEFI {
+		b.InSync = efiMirrorHasBootArtifacts(*b)
+	}
+}
+
+func detectRootModuleTree(kernelVersion string) (string, bool, bool) {
+	version := strings.TrimSpace(kernelVersion)
+	if version == "" || version == "unknown" {
+		return "", false, false
+	}
+	path := filepath.Join(RootModulesDir, version)
+	return path, true, dirExists(path)
+}
+
+func detectArchivedModuleTree(snapshotPath, kernelVersion string) (string, bool) {
+	version := strings.TrimSpace(kernelVersion)
+	if snapshotPath == "" || version == "" || version == "unknown" {
+		return "", false
+	}
+	path := archivedModuleImagePath(snapshotPath, version)
+	return path, fileExists(path)
+}
+
+func detectArchivedKernelVersion(snapshotPath string) string {
+	root := filepath.Join(snapshotPath, moduleArchiveRoot)
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return ""
+	}
+	var versions []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sqfs") {
+			versions = append(versions, strings.TrimSuffix(entry.Name(), ".sqfs"))
+		}
+	}
+	if len(versions) != 1 {
+		return ""
+	}
+	return versions[0]
+}
+
+func archivedModuleImagePath(snapshotPath, kernelVersion string) string {
+	return filepath.Join(snapshotPath, moduleArchiveRoot, kernelVersion+".sqfs")
+}
+
+func IsBootReady(b BootBackup) bool {
+	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && b.InSync && !hasKnownMissingRootModules(b)
+}
+
+func hasKnownMissingRootModules(b BootBackup) bool {
+	return b.RootModulesKnown && !b.HasRootModules
+}
+
+func rootModuleStatus(b BootBackup) string {
+	if !b.RootModulesKnown {
+		return "unknown"
+	}
+	if b.HasRootModules {
+		return "yes"
+	}
+	if b.HasArchivedModules {
+		return "archived"
+	}
+	return "missing"
+}
+
+func validateRootModuleCompatibility(b BootBackup) error {
+	if !hasKnownMissingRootModules(b) {
+		return nil
+	}
+	if b.HasArchivedModules {
+		return fmt.Errorf(
+			"snapshot %q uses kernel %s and has archived modules at %s, but matching root module tree is missing: %s; activation does not write to the root filesystem",
+			b.Name,
+			b.KernelVersion,
+			b.ArchivedModuleTree,
+			b.RootModuleTree,
+		)
+	}
+	return fmt.Errorf(
+		"snapshot %q uses kernel %s but matching root module tree is missing: %s; booting this entry is likely to enter emergency or maintenance mode",
+		b.Name,
+		b.KernelVersion,
+		b.RootModuleTree,
+	)
+}
+
+func archiveRootModulesForSnapshot(b *BootBackup) error {
+	if b.HasSnapshot && !b.RootModulesKnown {
+		if version := currentRunningKernelVersion(); version != "" {
+			b.KernelVersion = version
+			b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(version)
+		}
+	}
+	if !b.HasSnapshot || !b.RootModulesKnown || !b.HasRootModules {
+		return nil
+	}
+	dst := archivedModuleImagePath(b.SnapshotPath, b.KernelVersion)
+	if err := createModuleImageFunc(b.RootModuleTree, dst); err != nil {
+		return fmt.Errorf("archive kernel modules for %s: %w", b.KernelVersion, err)
+	}
+	b.ArchivedModuleTree = dst
+	b.HasArchivedModules = true
+	return nil
+}
+
+func createSquashFSModuleImage(src, dst string) error {
+	if strings.TrimSpace(MksquashfsBin) == "" {
+		return fmt.Errorf("mksquashfs is required but not configured")
+	}
+	if _, err := exec.LookPath(MksquashfsBin); err != nil {
+		return fmt.Errorf("mksquashfs is required for module archive but was not found in PATH")
+	}
+	if !dirExists(src) {
+		return fmt.Errorf("source module tree does not exist: %s", src)
+	}
+	if fileExists(dst) {
+		return fmt.Errorf("module archive already exists: %s", dst)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	cmd := exec.Command(MksquashfsBin, src, dst, "-comp", "zstd", "-Xcompression-level", "15", "-noappend")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("mksquashfs failed: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+func currentRunningKernelVersion() string {
+	out, err := exec.Command("uname", "-r").CombinedOutput()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func ensureEFIMirrorFromSnapshot(b *BootBackup) error {
 	if !b.HasSnapshot {
 		return fmt.Errorf("snapshot missing for %q", b.Name)
 	}
+	if err := ensureEFIMountAvailable(); err != nil {
+		return err
+	}
+	hadEFI := dirExists(b.EFIPath)
 	if err := os.MkdirAll(b.EFIPath, 0o755); err != nil {
 		return err
 	}
-	if err := syncDirContents(b.SnapshotPath, b.EFIPath); err != nil {
+	if err := syncDirContentsWithExcludes(b.SnapshotPath, b.EFIPath, []string{bootrecovMetadataRoot + "/**"}); err != nil {
+		if !hadEFI {
+			_ = os.RemoveAll(b.EFIPath)
+		}
 		return err
 	}
 	b.HasEFI = true
-	b.InSync = true
+	b.InSync = efiMirrorHasBootArtifacts(*b)
+	if !b.InSync {
+		if !hadEFI {
+			_ = os.RemoveAll(b.EFIPath)
+		}
+		return fmt.Errorf("EFI mirror for %q is missing required boot artifacts after sync", b.Name)
+	}
 	return nil
 }
 
@@ -364,24 +584,61 @@ func findKernelAndInitramfs(base string) (string, string) {
 	if base == "" {
 		return "", ""
 	}
-	kernel := firstExistingFile(base, []string{"vmlinuz-linux", "vmlinuz"})
-	initramfs := firstExistingFile(base, []string{"initramfs-linux.img", "initrd.img"})
-	if kernel == "" {
-		if matches, _ := filepath.Glob(filepath.Join(base, "vmlinuz-*")); len(matches) > 0 {
-			kernel = filepath.Base(matches[0])
+	for _, pair := range [][2]string{
+		{"vmlinuz-linux", "initramfs-linux.img"},
+		{"vmlinuz", "initrd.img"},
+	} {
+		if fileExists(filepath.Join(base, pair[0])) && fileExists(filepath.Join(base, pair[1])) {
+			return pair[0], pair[1]
 		}
 	}
-	if initramfs == "" {
-		patterns := []string{"initrd.img-*", "initramfs-*.img"}
-		for _, p := range patterns {
-			matches, _ := filepath.Glob(filepath.Join(base, p))
-			if len(matches) > 0 {
-				initramfs = filepath.Base(matches[0])
-				break
+
+	kernels := globBaseNames(base, "vmlinuz-*")
+	initramfs := append(globBaseNames(base, "initrd.img-*"), globBaseNames(base, "initramfs-*.img")...)
+	sort.Strings(initramfs)
+	for _, kernel := range kernels {
+		kernelVersion := parseKernelVersionFromName(kernel)
+		if kernelVersion == "" {
+			continue
+		}
+		for _, initrd := range initramfs {
+			if parseKernelVersionFromName(initrd) == kernelVersion {
+				return kernel, initrd
 			}
 		}
 	}
-	return kernel, initramfs
+
+	kernel := firstExistingFile(base, []string{"vmlinuz-linux", "vmlinuz"})
+	if kernel == "" && len(kernels) > 0 {
+		kernel = kernels[0]
+	}
+	initrd := firstExistingFile(base, []string{"initramfs-linux.img", "initrd.img"})
+	if initrd == "" && len(initramfs) > 0 {
+		initrd = initramfs[0]
+	}
+	return kernel, initrd
+}
+
+func globBaseNames(base, pattern string) []string {
+	matches, _ := filepath.Glob(filepath.Join(base, pattern))
+	out := make([]string, 0, len(matches))
+	for _, match := range matches {
+		out = append(out, filepath.Base(match))
+	}
+	sort.Strings(out)
+	return out
+}
+
+func efiMirrorHasBootArtifacts(b BootBackup) bool {
+	if !b.HasKernel || !b.HasInitramfs {
+		return false
+	}
+	for _, name := range append(append([]string{}, b.MicrocodeImages...), b.KernelImage, b.InitramfsImage) {
+		if !fileExists(filepath.Join(b.EFIPath, name)) {
+			return false
+		}
+	}
+	return true
 }
 
 func findMicrocodeImages(base string) []string {
@@ -424,9 +681,23 @@ func parseKernelVersionFromName(name string) string {
 	if name == "" {
 		return ""
 	}
+	for _, prefix := range []string{"vmlinuz-", "initrd.img-", "initramfs-"} {
+		if strings.HasPrefix(name, prefix) {
+			version := strings.TrimPrefix(name, prefix)
+			version = strings.TrimSuffix(version, ".img")
+			version = strings.TrimSuffix(version, "-fallback")
+			if regexp.MustCompile(`^\d+\.\d+`).MatchString(version) {
+				return version
+			}
+			return ""
+		}
+	}
 	// Examples: vmlinuz-6.8.0-31-generic, initrd.img-6.6.7-arch1-1
 	re := regexp.MustCompile(`\d+\.\d+(\.\d+)?[-A-Za-z0-9._]*`)
-	return re.FindString(name)
+	version := re.FindString(name)
+	version = strings.TrimSuffix(version, ".img")
+	version = strings.TrimSuffix(version, "-fallback")
+	return version
 }
 
 func parseKernelVersionFromFileCmd(kernelPath string) string {
@@ -541,22 +812,12 @@ func backupID(path string) string {
 // removes the associated GRUB entry when present.
 func DeleteBackup(name string) error {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("invalid backup name")
-	}
-	if strings.ContainsRune(name, '/') || name == backupNameCurrentDir || name == backupNameParentDir {
-		return fmt.Errorf("invalid backup name: %q", name)
+	if err := validateBackupName(name); err != nil {
+		return err
 	}
 
 	snapshotPath := filepath.Join(SnapshotDir, name)
 	efiPath := filepath.Join(EfiDir, name)
-	if err := os.RemoveAll(snapshotPath); err != nil {
-		return err
-	}
-	if err := os.RemoveAll(efiPath); err != nil {
-		return err
-	}
-
 	id := backupIDForName(name)
 	exists, err := grubEntryExistsByID(id)
 	if err != nil {
@@ -566,6 +827,17 @@ func DeleteBackup(name string) error {
 		if err := RemoveGrubEntry(id); err != nil {
 			return err
 		}
+	}
+	if dirExists(efiPath) {
+		if err := ensureEFIMountAvailable(); err != nil {
+			return err
+		}
+		if err := os.RemoveAll(efiPath); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(snapshotPath); err != nil {
+		return err
 	}
 	return nil
 }
@@ -590,7 +862,7 @@ func checkSnapshotSpace() error {
 }
 
 func checkEFISpaceForSnapshot(snapshotPath string) error {
-	size := dirSizeBytes(snapshotPath)
+	size := dirSizeBytesWithExcludes(snapshotPath, []string{filepath.Join(snapshotPath, bootrecovMetadataRoot)})
 	if size <= 0 {
 		size = estimateBackupBytes()
 	}
@@ -609,17 +881,44 @@ func checkEFISpaceForSnapshot(snapshotPath string) error {
 	return nil
 }
 
+func ensureEFIMountAvailable() error {
+	if !RequireEFIMount {
+		return nil
+	}
+	mountRoot := filepath.Clean(filepath.Dir(EfiDir))
+	mountPoint, err := findMountPoint(mountRoot)
+	if err != nil {
+		return fmt.Errorf("unable to verify EFI mount %s: %w", mountRoot, err)
+	}
+	if filepath.Clean(mountPoint) != mountRoot {
+		return fmt.Errorf("EFI mount %s is not mounted (nearest mount point: %s)", mountRoot, mountPoint)
+	}
+	return nil
+}
+
 func estimateBackupBytes() int64 {
 	excludes := []string{
+		filepath.Join(BootDir, "efi"),
 		filepath.Join(BootDir, "efi", "bootrecov-snapshots"),
 		filepath.Join(BootDir, "efi", "boot-backups"),
 	}
 	size := dirSizeBytesWithExcludes(BootDir, excludes)
+	size += estimateCurrentRootModuleBytes()
 	if size <= 0 {
 		return 64 * 1024 * 1024
 	}
 	// Add safety buffer for metadata/filesystem overhead.
 	return int64(float64(size)*1.15) + 32*1024*1024
+}
+
+func estimateCurrentRootModuleBytes() int64 {
+	kernel, initramfs := findKernelAndInitramfs(BootDir)
+	version := detectKernelVersion(BootDir, kernel, initramfs)
+	modulePath, known, exists := detectRootModuleTree(version)
+	if !known || !exists {
+		return 0
+	}
+	return dirSizeBytes(modulePath)
 }
 
 func freeBytesAt(path string) (int64, error) {
@@ -691,7 +990,7 @@ func maxBackupCountFromFree(freeBytes, estimate int64) int64 {
 }
 
 func copyBootSourceToSnapshot(snapshotTarget string) error {
-	excludes := []string{"efi/bootrecov-snapshots/**", "efi/boot-backups/**"}
+	excludes := []string{"efi/**", "efi/bootrecov-snapshots/**", "efi/boot-backups/**"}
 	if strings.EqualFold(strings.TrimSpace(BackupProfile), "minimal") {
 		return syncDirContentsWithFilters(BootDir, snapshotTarget, excludes, minimalBootIncludePatterns())
 	}
@@ -832,8 +1131,9 @@ func AddGrubEntry(b BootBackup) error {
 	if name == "" {
 		name = filepath.Base(filepath.Clean(b.Path))
 	}
-	if name == "" || name == "." {
-		return fmt.Errorf("invalid backup name")
+	name = strings.TrimSpace(name)
+	if err := validateBackupName(name); err != nil {
+		return err
 	}
 
 	canonical := buildBackupFromName(name)
@@ -843,6 +1143,12 @@ func AddGrubEntry(b BootBackup) error {
 	}
 	if !canonical.HasKernel || !canonical.HasInitramfs {
 		return fmt.Errorf("backup %q is incomplete", canonical.Path)
+	}
+	if err := validateRootModuleCompatibility(canonical); err != nil {
+		return err
+	}
+	if err := ensureEFIMountAvailable(); err != nil {
+		return err
 	}
 
 	displayPath := canonical.EFIPath
@@ -859,11 +1165,15 @@ func AddGrubEntry(b BootBackup) error {
 	if err := ensureGrubFile(); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(GrubCustom, os.O_APPEND|os.O_WRONLY, 0o644)
+	original, err := os.ReadFile(GrubCustom)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	st, err := os.Stat(GrubCustom)
+	if err != nil {
+		return err
+	}
+	perm := st.Mode().Perm() | 0o111
 
 	cmdline := currentKernelCmdline()
 	if !strings.Contains(cmdline, kernelCmdlineMarker) {
@@ -879,10 +1189,14 @@ func AddGrubEntry(b BootBackup) error {
 		grubPath, canonical.KernelImage, cmdline,
 		grubInitrdArgs(grubPath, canonical.MicrocodeImages, canonical.InitramfsImage))
 
-	if _, err = f.WriteString(entry); err != nil {
+	if err := os.WriteFile(GrubCustom, append(append([]byte{}, original...), []byte(entry)...), perm); err != nil {
 		return err
 	}
-	return updateGrubConfig()
+	if err := updateGrubConfig(); err != nil {
+		_ = os.WriteFile(GrubCustom, original, perm)
+		return err
+	}
+	return nil
 }
 
 func grubEntryExistsByID(id string) (bool, error) {
@@ -973,7 +1287,11 @@ func RemoveGrubEntry(id string) error {
 	if err := os.WriteFile(GrubCustom, []byte(strings.Join(out, "\n")), perm); err != nil {
 		return err
 	}
-	return updateGrubConfig()
+	if err := updateGrubConfig(); err != nil {
+		_ = os.WriteFile(GrubCustom, data, perm)
+		return err
+	}
+	return nil
 }
 
 // ListGrubEntries parses GrubCustom and returns bootrecov entries.
@@ -1034,7 +1352,7 @@ func removeStaleGrubEntries(backups []BootBackup, preserveByName map[string]stru
 			valid[backupIDForName(b.Name)] = b.EFIPath
 			continue
 		}
-		if b.HasSnapshot && b.HasEFI && b.InSync && b.HasKernel && b.HasInitramfs {
+		if IsBootReady(b) {
 			valid[backupIDForName(b.Name)] = b.EFIPath
 		}
 	}
@@ -1069,7 +1387,11 @@ func backupIDForName(name string) string {
 }
 
 func RecoveryCommands(name string) (string, error) {
-	canonical := buildBackupFromName(strings.TrimSpace(name))
+	name = strings.TrimSpace(name)
+	if err := validateBackupName(name); err != nil {
+		return "", err
+	}
+	canonical := buildBackupFromName(name)
 	refreshBackupCompleteness(&canonical)
 	if !canonical.HasSnapshot {
 		return "", fmt.Errorf("snapshot %q does not exist", name)
@@ -1079,6 +1401,9 @@ func RecoveryCommands(name string) (string, error) {
 	}
 	if !canonical.HasKernel || !canonical.HasInitramfs {
 		return "", fmt.Errorf("snapshot %q is incomplete", name)
+	}
+	if err := validateRootModuleCompatibility(canonical); err != nil {
+		return "", err
 	}
 
 	grubPath := grubVisiblePath(canonical.EFIPath)
@@ -1098,13 +1423,23 @@ func RecoveryCommands(name string) (string, error) {
 // ActivateBackup copies a snapshot to EFI (after free-space check) and ensures
 // a matching GRUB entry exists.
 func ActivateBackup(name string) error {
-	canonical := buildBackupFromName(strings.TrimSpace(name))
+	name = strings.TrimSpace(name)
+	if err := validateBackupName(name); err != nil {
+		return err
+	}
+	canonical := buildBackupFromName(name)
 	refreshBackupCompleteness(&canonical)
 	if !canonical.HasSnapshot {
 		return fmt.Errorf("snapshot %q does not exist", name)
 	}
 	if !canonical.HasKernel || !canonical.HasInitramfs {
 		return fmt.Errorf("snapshot %q is incomplete", name)
+	}
+	if err := validateRootModuleCompatibility(canonical); err != nil {
+		return err
+	}
+	if err := ensureEFIMountAvailable(); err != nil {
+		return err
 	}
 	if !canonical.HasEFI {
 		if err := checkEFISpaceForSnapshot(canonical.SnapshotPath); err != nil {
@@ -1121,11 +1456,16 @@ func ActivateBackup(name string) error {
 // keeping the snapshot in SnapshotDir.
 func DeactivateBackup(name string) error {
 	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("invalid backup name")
+	if err := validateBackupName(name); err != nil {
+		return err
 	}
 	if err := RemoveGrubEntry(backupIDForName(name)); err != nil {
 		return err
+	}
+	if dirExists(filepath.Join(EfiDir, name)) {
+		if err := ensureEFIMountAvailable(); err != nil {
+			return err
+		}
 	}
 	return os.RemoveAll(filepath.Join(EfiDir, name))
 }
@@ -1245,9 +1585,10 @@ func helpMentionsFlag(help, flag string) bool {
 	if flag == "" {
 		return false
 	}
+	pattern := regexp.MustCompile(`(^|[\s,])` + regexp.QuoteMeta(flag) + `($|[\s,=])`)
 	for _, line := range strings.Split(help, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, flag+" ") || trimmed == flag {
+		if pattern.MatchString(trimmed) {
 			return true
 		}
 	}

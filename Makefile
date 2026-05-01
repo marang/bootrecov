@@ -1,6 +1,9 @@
 APP := bootrecov
 BIN_DIR := bin
 OUT := $(BIN_DIR)/$(APP)
+GO_CACHE_DIR ?= /tmp/bootrecov-go-cache
+GO_MOD_CACHE_DIR ?= /tmp/bootrecov-go-mod-cache
+GO_ENV := GOCACHE=$(GO_CACHE_DIR) GOMODCACHE=$(GO_MOD_CACHE_DIR)
 
 .PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-watch
 
@@ -18,19 +21,19 @@ help:
 
 build:
 	@mkdir -p $(BIN_DIR)
-	go build -o $(OUT) ./cmd/bootrecov
+	$(GO_ENV) go build -o $(OUT) ./cmd/bootrecov
 
 run:
-	go run ./cmd/bootrecov
+	$(GO_ENV) go run ./cmd/bootrecov
 
 fmt:
 	gofmt -w cmd/bootrecov/main.go internal/tui/*.go test/bootvm/guest_smoke.go
 
 test:
-	go vet ./...
-	go test ./...
-	go test -race ./...
-	go test -cover ./...
+	$(GO_ENV) go vet ./...
+	$(GO_ENV) go test ./...
+	$(GO_ENV) go test -race ./...
+	$(GO_ENV) go test -cover ./...
 
 clean:
 	rm -rf $(BIN_DIR)
@@ -42,7 +45,7 @@ test-bootvm-prepare: test-bootvm-requirements
 	bash test/bootvm/run_rootless_vm_test.sh --prepare
 
 test-bootvm: test-bootvm-requirements
-	bash test/bootvm/run_rootless_vm_test.sh
+	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh
 
 test-bootvm-watch: test
-	bash test/bootvm/watch_tmux.sh
+	$(GO_ENV) bash test/bootvm/watch_tmux.sh

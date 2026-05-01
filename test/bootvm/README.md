@@ -28,6 +28,8 @@ Watch mode:
 make test-bootvm-watch
 ```
 
+Watch mode opens three panes: the test runner, a status/log dashboard, and an interactive serial console into the guest that reconnects after reboots. Press `Ctrl-]` in the serial pane to detach from the console connection.
+
 Host prerequisites:
 
 - `qemu-system-x86_64`
@@ -35,13 +37,16 @@ Host prerequisites:
 - `OVMF` / `edk2-ovmf`
 - `ssh`, `scp`, `ssh-keygen`
 - `curl`
+- `socat`
 - one of `cloud-localds` or `genisoimage`
 
 Arch install:
 
 ```bash
-sudo pacman -S --needed qemu-base edk2-ovmf openssh curl cloud-image-utils
+sudo pacman -S --needed qemu-base edk2-ovmf openssh curl cloud-image-utils socat
 ```
+
+The VM guest installs Bootrecov runtime tools such as `rclone`, `squashfs-tools`, and `grub-common` during the test.
 
 Preflight check:
 
@@ -60,5 +65,8 @@ Runtime logs (written under project directory):
 The test assertions include:
 
 - GRUB custom script dump before and after backup entry generation
+- real `bootrecov backup create` generation of a compressed root module SquashFS image
+- activation of the real snapshot while verifying `.bootrecov` metadata is excluded from the EFI mirror
+- previous-kernel missing-module activation refusal when an archived `.sqfs` exists but `/usr/lib/modules/<version>` is absent
 - one-shot reboot into generated backup GRUB entry, verified by `/proc/cmdline` marker
 - corruption of primary kernel, then a second successful backup-entry reboot

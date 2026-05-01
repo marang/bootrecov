@@ -28,20 +28,35 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
-	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldHookPath, oldRclone, oldRequire, oldStatfs, oldMountInfo :=
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, PacmanHookPath, RcloneBin, RequireRclone, statfsFunc, mountInfoPath
+	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldRequireEFIMount, oldCreateImage, oldStatfs, oldMountInfo :=
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, RequireEFIMount, createModuleImageFunc, statfsFunc, mountInfoPath
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
 	GrubCfgOutput = filepath.Join(filepath.Dir(grub), "grub.cfg")
 	GrubMkconfig = ""
 	AutoUpdateGrub = false
+	RootModulesDir = filepath.Join(filepath.Dir(grub), "modules")
 	PacmanHookPath = filepath.Join(filepath.Dir(grub), "bootrecov.hook")
 	RcloneBin = ""
 	RequireRclone = false
+	MksquashfsBin = ""
+	RequireMksquashfs = false
+	RequireEFIMount = false
+	createModuleImageFunc = fakeCreateModuleImage
 	statfsFunc = syscall.Statfs
 	t.Cleanup(func() {
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, PacmanHookPath, RcloneBin, RequireRclone, statfsFunc, mountInfoPath =
-			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldHookPath, oldRclone, oldRequire, oldStatfs, oldMountInfo
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, RequireEFIMount, createModuleImageFunc, statfsFunc, mountInfoPath =
+			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldRequireEFIMount, oldCreateImage, oldStatfs, oldMountInfo
 	})
+}
+
+func fakeCreateModuleImage(src, dst string) error {
+	if !dirExists(src) {
+		return fmt.Errorf("source module tree does not exist: %s", src)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(dst, []byte("squashfs"), 0o644)
 }
 
 func writeFile(t *testing.T, path string) {
@@ -62,6 +77,16 @@ func makeBootableBackup(t *testing.T, root, name string) {
 	}
 	writeFile(t, filepath.Join(dir, "vmlinuz"))
 	writeFile(t, filepath.Join(dir, "initrd.img"))
+}
+
+func makeVersionedBootableBackup(t *testing.T, root, name, version string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "vmlinuz-"+version))
+	writeFile(t, filepath.Join(dir, "initrd.img-"+version))
 }
 
 func TestDiscoverBackupsDeduplicatesByName(t *testing.T) {
@@ -94,6 +119,8 @@ func TestCheckRuntimeDependenciesReportsMissingTools(t *testing.T) {
 	RcloneBin = "definitely-missing-rclone"
 	AutoUpdateGrub = true
 	GrubMkconfig = "definitely-missing-grub-mkconfig"
+	RequireMksquashfs = true
+	MksquashfsBin = "definitely-missing-mksquashfs"
 
 	err := CheckRuntimeDependencies()
 	if err == nil {
@@ -105,6 +132,9 @@ func TestCheckRuntimeDependenciesReportsMissingTools(t *testing.T) {
 	}
 	if !strings.Contains(text, "definitely-missing-grub-mkconfig") {
 		t.Fatalf("expected grub-mkconfig in error, got: %s", text)
+	}
+	if !strings.Contains(text, "definitely-missing-mksquashfs") {
+		t.Fatalf("expected mksquashfs in error, got: %s", text)
 	}
 }
 
@@ -213,6 +243,30 @@ func TestSyncBackupsAndGrubPreservesActiveGrubEntryWhenRefreshFails(t *testing.T
 	}
 }
 
+func TestSyncBackupsAndGrubRequiresEFIMountBeforeMutation(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	RequireEFIMount = true
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	if err := os.WriteFile(mountInfoPath, []byte("24 1 8:1 / / rw,relatime - ext4 /dev/root rw\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeBootableBackup(t, snap, "active")
+	entryID := backupID(filepath.Join(efi, "active"))
+	entry := fmt.Sprintf("#!/bin/bash\ncat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n}\nEOF\n", filepath.Join(efi, "active"), entryID)
+	if err := os.WriteFile(grub, []byte(entry), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := SyncBackupsAndGrub()
+	if err == nil || !strings.Contains(err.Error(), "EFI mount") {
+		t.Fatalf("expected EFI mount error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(efi, "active")); !os.IsNotExist(statErr) {
+		t.Fatalf("reconcile should not create EFI mirror when mount is unavailable, err=%v", statErr)
+	}
+}
+
 func TestAddGrubEntryRequiresSyncedPair(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
@@ -253,6 +307,22 @@ func TestAddRemoveGrubEntryForSyncedPair(t *testing.T) {
 	}
 }
 
+func TestAddGrubEntryRejectsStaleEFIMirrorMissingBootArtifacts(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+
+	makeBootableBackup(t, snap, "stale")
+	if err := os.MkdirAll(filepath.Join(efi, "stale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(efi, "stale", "vmlinuz"))
+
+	err := AddGrubEntry(BootBackup{Name: "stale"})
+	if err == nil || !strings.Contains(err.Error(), "not activated in EFI") {
+		t.Fatalf("expected stale EFI mirror rejection, got %v", err)
+	}
+}
+
 func TestCreateBootBackupNowSkipsRecursiveEfiBackupCopy(t *testing.T) {
 	boot, snap, _, grub := setupDirs(t)
 	efi := filepath.Join(boot, "efi", "bootrecov-snapshots")
@@ -264,6 +334,7 @@ func TestCreateBootBackupNowSkipsRecursiveEfiBackupCopy(t *testing.T) {
 	writeFile(t, filepath.Join(boot, "vmlinuz"))
 	writeFile(t, filepath.Join(boot, "initrd.img"))
 	writeFile(t, filepath.Join(boot, "efi", "bootrecov-snapshots", "old", "should-not-copy"))
+	writeFile(t, filepath.Join(boot, "efi", "EFI", "BOOT", "BOOTX64.EFI"))
 
 	created, err := CreateBootBackupNow()
 	if err != nil {
@@ -274,6 +345,35 @@ func TestCreateBootBackupNowSkipsRecursiveEfiBackupCopy(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(created.Path, "efi", "bootrecov-snapshots")); !os.IsNotExist(err) {
 		t.Fatalf("recursive efi backup copy detected, expected no nested efi backup dir, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(created.Path, "efi", "EFI")); !os.IsNotExist(err) {
+		t.Fatalf("ESP content should not be copied into full backup, err=%v", err)
+	}
+}
+
+func TestCreateBootBackupNowArchivesMatchingRootModules(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	writeFile(t, filepath.Join(boot, "vmlinuz-"+version))
+	writeFile(t, filepath.Join(boot, "initrd.img-"+version))
+	writeFile(t, filepath.Join(RootModulesDir, version, "kernel", "fs", "xfs.ko"))
+
+	created, err := CreateBootBackupNow()
+	if err != nil {
+		t.Fatalf("CreateBootBackupNow failed: %v", err)
+	}
+	if !created.HasArchivedModules {
+		t.Fatalf("expected archived root modules: %#v", created)
+	}
+	if _, err := os.Stat(archivedModuleImagePath(created.SnapshotPath, version)); err != nil {
+		t.Fatalf("expected archived module image: %v", err)
+	}
+	if err := ensureEFIMirrorFromSnapshot(&created); err != nil {
+		t.Fatalf("ensureEFIMirrorFromSnapshot failed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(efi, created.Name, bootrecovMetadataRoot)); !os.IsNotExist(err) {
+		t.Fatalf("bootrecov metadata should not be copied to EFI mirror, err=%v", err)
 	}
 }
 
@@ -322,6 +422,16 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 	}
 }
 
+func TestInstallPacmanHookRejectsWhitespacePath(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+
+	err := InstallPacmanHook("/usr/local/bin/boot recov")
+	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
+		t.Fatalf("expected whitespace path error, got %v", err)
+	}
+}
+
 func TestRecoveryCommandsRequireActivatedBackup(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
@@ -364,7 +474,7 @@ func TestRecoveryCommandsUseGrubVisiblePaths(t *testing.T) {
 func TestHelpMentionsFlag(t *testing.T) {
 	help := `
 Flags for copy:
-      --links     Translate symlinks
+  -l, --links     Translate symlinks
       --times     Preserve time
 `
 	if !helpMentionsFlag(help, "--links") {
@@ -372,6 +482,63 @@ Flags for copy:
 	}
 	if helpMentionsFlag(help, "--perms") {
 		t.Fatal("did not expect --perms to be detected")
+	}
+}
+
+func TestRejectsPathTraversalBackupNames(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{"../escape", ActivateBackup("../escape")},
+		{"../escape", DeactivateBackup("../escape")},
+		{"../escape", DeleteBackup("../escape")},
+	} {
+		if tc.err == nil || !strings.Contains(tc.err.Error(), "invalid backup name") {
+			t.Fatalf("expected invalid backup name for %q, got %v", tc.name, tc.err)
+		}
+	}
+	if _, err := RecoveryCommands("../escape"); err == nil || !strings.Contains(err.Error(), "invalid backup name") {
+		t.Fatalf("expected invalid backup name for RecoveryCommands, got %v", err)
+	}
+	if err := AddGrubEntry(BootBackup{Name: "../escape"}); err == nil || !strings.Contains(err.Error(), "invalid backup name") {
+		t.Fatalf("expected invalid backup name for AddGrubEntry, got %v", err)
+	}
+}
+
+func TestActivateBackupRequiresEFIMountWhenEnabled(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	RequireEFIMount = true
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	if err := os.WriteFile(mountInfoPath, []byte("24 1 8:1 / / rw,relatime - ext4 /dev/root rw\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeBootableBackup(t, snap, "cold")
+
+	err := ActivateBackup("cold")
+	if err == nil || !strings.Contains(err.Error(), "EFI mount") {
+		t.Fatalf("expected EFI mount error, got %v", err)
+	}
+}
+
+func TestActivateBackupAcceptsMountedEFIRoot(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	RequireEFIMount = true
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	efiRoot := filepath.Dir(efi)
+	content := fmt.Sprintf("36 25 8:2 / %s rw,relatime - vfat /dev/sda2 rw\n", efiRoot)
+	if err := os.WriteFile(mountInfoPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	makeBootableBackup(t, snap, "cold")
+
+	if err := ActivateBackup("cold"); err != nil {
+		t.Fatalf("ActivateBackup failed with mounted EFI root: %v", err)
 	}
 }
 
@@ -500,6 +667,31 @@ func TestAddGrubEntryUsesGrubVisibleBootPaths(t *testing.T) {
 	}
 }
 
+func TestAddGrubEntryClosesCustomFileBeforeGrubMkconfig(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	makeBootableBackup(t, snap, "pair")
+	makeBootableBackup(t, efi, "pair")
+
+	checker := filepath.Join(t.TempDir(), "check-grub-closed")
+	script := fmt.Sprintf(`#!/bin/sh
+if fuser %q >/dev/null 2>&1; then
+  echo "grub custom file still open"
+  exit 126
+fi
+exit 0
+`, grub)
+	if err := os.WriteFile(checker, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	AutoUpdateGrub = true
+	GrubMkconfig = checker
+
+	if err := AddGrubEntry(BootBackup{Name: "pair"}); err != nil {
+		t.Fatalf("AddGrubEntry failed: %v", err)
+	}
+}
+
 func TestParseTimeFromBackupName(t *testing.T) {
 	cases := []string{"20260411-1901", "20260411-190145", "snap-20250713-1830"}
 	for _, in := range cases {
@@ -511,16 +703,108 @@ func TestParseTimeFromBackupName(t *testing.T) {
 
 func TestParseKernelVersionFromName(t *testing.T) {
 	cases := map[string]string{
-		"vmlinuz-6.8.0-31-generic": "6.8.0-31-generic",
-		"initrd.img-6.6.7-arch1-1": "6.6.7-arch1-1",
-		"vmlinuz-linux":            "",
-		"initramfs-linux-fallback": "",
+		"vmlinuz-6.8.0-31-generic":             "6.8.0-31-generic",
+		"initrd.img-6.6.7-arch1-1":             "6.6.7-arch1-1",
+		"initramfs-6.6.7-arch1-1.img":          "6.6.7-arch1-1",
+		"initramfs-6.6.7-arch1-1-fallback.img": "6.6.7-arch1-1",
+		"vmlinuz-linux":                        "",
+		"initramfs-linux-fallback":             "",
 	}
 	for in, want := range cases {
 		got := parseKernelVersionFromName(in)
 		if got != want {
 			t.Fatalf("parseKernelVersionFromName(%q)=%q want %q", in, got, want)
 		}
+	}
+}
+
+func TestFindKernelAndInitramfsPairsMatchingVersions(t *testing.T) {
+	base := t.TempDir()
+	writeFile(t, filepath.Join(base, "vmlinuz-7.0.0-arch1-1"))
+	writeFile(t, filepath.Join(base, "vmlinuz-6.6.7-arch1-1"))
+	writeFile(t, filepath.Join(base, "initrd.img-7.0.0-arch1-1"))
+
+	kernel, initrd := findKernelAndInitramfs(base)
+	if kernel != "vmlinuz-7.0.0-arch1-1" || initrd != "initrd.img-7.0.0-arch1-1" {
+		t.Fatalf("expected matching kernel/initrd pair, got %q %q", kernel, initrd)
+	}
+}
+
+func TestDiscoverBackupsDetectsMissingRootModuleTree(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	makeVersionedBootableBackup(t, snap, "old", "6.6.7-arch1-1")
+	makeVersionedBootableBackup(t, efi, "old", "6.6.7-arch1-1")
+
+	backups, err := DiscoverBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+	b := backups[0]
+	if !b.RootModulesKnown {
+		t.Fatalf("expected root module tree to be checked: %#v", b)
+	}
+	if b.HasRootModules {
+		t.Fatalf("expected root modules to be missing: %#v", b)
+	}
+	if IsBootReady(b) {
+		t.Fatalf("expected backup with missing root modules not to be boot-ready: %#v", b)
+	}
+}
+
+func TestAddGrubEntryRejectsMissingRootModuleTree(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	makeVersionedBootableBackup(t, snap, "old", "6.6.7-arch1-1")
+	makeVersionedBootableBackup(t, efi, "old", "6.6.7-arch1-1")
+
+	err := AddGrubEntry(BootBackup{Name: "old"})
+	if err == nil || !strings.Contains(err.Error(), "matching root module tree is missing") {
+		t.Fatalf("expected missing module tree error, got %v", err)
+	}
+}
+
+func TestActivateBackupDoesNotInstallArchivedRootModules(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	makeVersionedBootableBackup(t, snap, "old", version)
+	writeFile(t, archivedModuleImagePath(filepath.Join(snap, "old"), version))
+
+	err := ActivateBackup("old")
+	if err == nil || !strings.Contains(err.Error(), "activation does not write to the root filesystem") {
+		t.Fatalf("expected no root filesystem write error, got %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(RootModulesDir, version)); !os.IsNotExist(statErr) {
+		t.Fatalf("activation must not create root module tree, err=%v", statErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(efi, "old")); !os.IsNotExist(statErr) {
+		t.Fatalf("activation should not create EFI mirror for unsafe snapshot, err=%v", statErr)
+	}
+}
+
+func TestAddGrubEntryAllowsMatchingRootModuleTree(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	makeVersionedBootableBackup(t, snap, "old", version)
+	makeVersionedBootableBackup(t, efi, "old", version)
+	if err := os.MkdirAll(filepath.Join(RootModulesDir, version), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddGrubEntry(BootBackup{Name: "old"}); err != nil {
+		t.Fatalf("AddGrubEntry failed: %v", err)
+	}
+	entries, err := ListGrubEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one GRUB entry, got %#v", entries)
 	}
 }
 

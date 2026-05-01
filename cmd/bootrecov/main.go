@@ -162,16 +162,17 @@ func newBackupCmd() *cobra.Command {
 				}
 				_ = entries
 				tw := newTabWriter()
-				fmt.Fprintln(tw, "NAME\tSNAPSHOT\tEFI\tGRUB\tBOOTABLE\tCREATED\tSIZE\tKERNEL")
+				fmt.Fprintln(tw, "NAME\tSNAPSHOT\tEFI\tGRUB\tBOOTABLE\tROOT-MODULES\tCREATED\tSIZE\tKERNEL")
 				for _, b := range backups {
 					fmt.Fprintf(
 						tw,
-						"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+						"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 						b.Name,
 						boolWord(b.HasSnapshot),
 						boolWord(b.HasEFI),
 						boolWord(b.GrubEntryExists),
 						boolWord(isBootable(b)),
+						rootModulesWord(b),
 						formatTime(b.CreatedAt),
 						formatBytesCLI(b.SizeBytes),
 						formatKernel(b.KernelVersion),
@@ -301,7 +302,20 @@ func boolWord(v bool) string {
 }
 
 func isBootable(b tui.BootBackup) bool {
-	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && b.InSync
+	return tui.IsBootReady(b)
+}
+
+func rootModulesWord(b tui.BootBackup) string {
+	if !b.RootModulesKnown {
+		return "unknown"
+	}
+	if b.HasRootModules {
+		return "yes"
+	}
+	if b.HasArchivedModules {
+		return "archived"
+	}
+	return "missing"
 }
 
 func formatTime(ts time.Time) string {
