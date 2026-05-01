@@ -60,10 +60,10 @@ func AddGrubEntry(b BootBackup) error {
 	canonical := buildBackupFromName(name)
 	refreshBackupCompleteness(&canonical)
 	if !canonical.HasSnapshot || !canonical.HasEFI || !canonical.InSync {
-		return fmt.Errorf("backup %q is not activated in EFI (press 'g' in TUI to activate)", name)
+		return fmt.Errorf("%w: backup %q is not activated in EFI (press 'g' in TUI to activate)", ErrBackupNotActivated, name)
 	}
 	if !canonical.HasKernel || !canonical.HasInitramfs {
-		return fmt.Errorf("backup %q is incomplete", canonical.Path)
+		return fmt.Errorf("%w: backup %q is incomplete", ErrBackupIncomplete, canonical.Path)
 	}
 	if err := validateRootModuleCompatibility(canonical); err != nil {
 		return err
@@ -324,13 +324,13 @@ func RecoveryCommands(name string) (string, error) {
 	canonical := buildBackupFromName(name)
 	refreshBackupCompleteness(&canonical)
 	if !canonical.HasSnapshot {
-		return "", fmt.Errorf("snapshot %q does not exist", name)
+		return "", fmt.Errorf("%w: %q", ErrBackupNotFound, name)
 	}
 	if !canonical.HasEFI {
-		return "", fmt.Errorf("snapshot %q is not activated in EFI (press 'g' in TUI to activate)", name)
+		return "", fmt.Errorf("%w: snapshot %q is not activated in EFI (press 'g' in TUI to activate)", ErrBackupNotActivated, name)
 	}
 	if !canonical.HasKernel || !canonical.HasInitramfs {
-		return "", fmt.Errorf("snapshot %q is incomplete", name)
+		return "", fmt.Errorf("%w: snapshot %q is incomplete", ErrBackupIncomplete, name)
 	}
 	if err := validateRootModuleCompatibility(canonical); err != nil {
 		return "", err
@@ -355,18 +355,18 @@ func updateGrubConfig() error {
 		return nil
 	}
 	if strings.TrimSpace(GrubMkconfig) == "" {
-		return fmt.Errorf("grub config regeneration is enabled but grub-mkconfig is not configured")
+		return fmt.Errorf("%w: grub config regeneration is enabled but grub-mkconfig is not configured", ErrRequiredToolUnavailable)
 	}
 	if strings.TrimSpace(GrubCfgOutput) == "" {
-		return fmt.Errorf("grub config regeneration is enabled but grub.cfg output path is not configured")
+		return fmt.Errorf("%w: grub config regeneration is enabled but grub.cfg output path is not configured", ErrRequiredToolUnavailable)
 	}
 	if _, err := exec.LookPath(GrubMkconfig); err != nil {
-		return fmt.Errorf("grub config regeneration failed: %s not found in PATH", GrubMkconfig)
+		return fmt.Errorf("%w: grub config regeneration failed: %s not found in PATH", ErrRequiredToolUnavailable, GrubMkconfig)
 	}
 	cmd := exec.Command(GrubMkconfig, "-o", GrubCfgOutput)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("grub config regeneration failed: %w: %s", err, strings.TrimSpace(string(out)))
+		return fmt.Errorf("%w: grub config regeneration: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
 	}
 	return nil
 }

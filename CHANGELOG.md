@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.0 - 2026-05-01
+
+### Added
+
+- Roadmap documentation under `docs/roadmap/` for distribution support, bootloader support, testing gates, and release gates.
+- Hook-specific `bootrecov hook backup-now` entrypoint for pre-transaction snapshots.
+
+### Changed
+
+- Pacman hooks now skip pre-transaction snapshots with a warning when space is insufficient, instead of blocking the package transaction.
+- Pacman hooks still do not automatically activate created snapshots in EFI or the bootloader.
+- Error handling now exposes typed errors for backup, EFI, bootloader, dependency, sync, and space failures instead of requiring message-string matching.
+
 ## v0.3.0 - 2026-05-01
 
 ### Added

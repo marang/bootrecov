@@ -155,7 +155,7 @@ func ensureSupportedBootloader() error {
 	if bootloaderSupported(currentBootloaderID()) {
 		return nil
 	}
-	return fmt.Errorf("bootloader %q is not supported yet", currentBootloaderID())
+	return fmt.Errorf("%w: bootloader %q is not supported yet", ErrUnsupportedBootloader, currentBootloaderID())
 }
 
 func ensurePlatformHookSupported() error {
@@ -163,9 +163,9 @@ func ensurePlatformHookSupported() error {
 		return nil
 	}
 	if currentPlatformID() == PlatformUbuntu || currentPlatformID() == PlatformDebian {
-		return fmt.Errorf("package-manager hook install is not implemented for %s yet; apt/dpkg hook support is planned", currentPlatformID())
+		return fmt.Errorf("%w: package-manager hook install is not implemented for %s yet; apt/dpkg hook support is planned", ErrUnsupportedPackageHook, currentPlatformID())
 	}
-	return fmt.Errorf("package-manager hook install is not supported for platform %q", currentPlatformID())
+	return fmt.Errorf("%w: package-manager hook install is not supported for platform %q", ErrUnsupportedPackageHook, currentPlatformID())
 }
 
 func detectPlatform() (string, string) {

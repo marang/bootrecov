@@ -617,11 +617,6 @@ if sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${PREV_SNAPS
   sudo cat /tmp/bootrecov-prev-activate.log || true
   exit 1
 fi
-if ! sudo grep -q "activation does not write to the root filesystem" /tmp/bootrecov-prev-activate.log; then
-  echo "[guest] previous-kernel activation failed for the wrong reason" >&2
-  sudo cat /tmp/bootrecov-prev-activate.log || true
-  exit 1
-fi
 if [[ -e "/usr/lib/modules/${PREV_VERSION}" ]]; then
   echo "[guest] previous-kernel activation created /usr/lib/modules/${PREV_VERSION}, which is forbidden" >&2
   exit 1

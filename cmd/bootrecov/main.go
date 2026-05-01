@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -21,7 +22,12 @@ const (
 	riskAcceptFlagMsg = "acknowledge that bootrecov has no warranty and is used at your own risk"
 )
 
-var riskAccepted bool
+var (
+	errRiskAcknowledgementRequired = errors.New("risk acknowledgement required")
+	errRiskAcknowledgementRejected = errors.New("risk acknowledgement rejected")
+	riskAccepted                   bool
+	createBootBackupNow            = tui.CreateBootBackupNow
+)
 
 func main() {
 	configureFromEnv()
@@ -138,7 +144,24 @@ func newHookCmd() *cobra.Command {
 			return nil
 		},
 	}
-	hookCmd.AddCommand(installCmd)
+	backupNowCmd := &cobra.Command{
+		Use:    "backup-now",
+		Hidden: true,
+		Short:  "Create a pre-transaction snapshot from a package-manager hook",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			created, err := createBootBackupNow()
+			if err != nil {
+				if tui.IsInsufficientSpaceError(err) {
+					fmt.Fprintf(os.Stderr, "bootrecov warning: skipping pre-transaction backup: %v\n", err)
+					return nil
+				}
+				return err
+			}
+			fmt.Println(created.Name)
+			return nil
+		},
+	}
+	hookCmd.AddCommand(installCmd, backupNowCmd)
 	return hookCmd
 }
 
@@ -381,7 +404,7 @@ func requireRiskAcknowledgement() error {
 		return nil
 	}
 	if !stdinIsTerminal() {
-		return fmt.Errorf("risk acknowledgement required; rerun with --yes-i-understand or %s=1", riskAcceptEnv)
+		return fmt.Errorf("%w; rerun with --yes-i-understand or %s=1", errRiskAcknowledgementRequired, riskAcceptEnv)
 	}
 	fmt.Fprintln(os.Stderr, "bootrecov modifies boot-critical files and can make a system unbootable.")
 	fmt.Fprintln(os.Stderr, "There is no warranty. You use this software entirely at your own risk.")
@@ -391,7 +414,7 @@ func requireRiskAcknowledgement() error {
 		return err
 	}
 	if strings.TrimSpace(line) != riskAcceptPhrase {
-		return fmt.Errorf("risk acknowledgement was not accepted")
+		return errRiskAcknowledgementRejected
 	}
 	return nil
 }

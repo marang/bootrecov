@@ -33,7 +33,7 @@ func findMountPoint(path string) (string, error) {
 		}
 	}
 	if best == "" {
-		return "", fmt.Errorf("no mount point found for %s", path)
+		return "", fmt.Errorf("%w: %s", ErrMountPointNotFound, path)
 	}
 	return best, nil
 }

@@ -121,6 +121,8 @@ BOOTRECOV_ESP_DIR=/boot/efi
 BOOTRECOV_EFI_MIRROR_DIR=/boot/efi/bootrecov-snapshots
 ```
 
+The detailed expansion roadmap for future distributions and bootloaders lives in [`docs/roadmap/`](docs/roadmap/README.md).
+
 ## Install And Build
 
 Build locally:
@@ -347,8 +349,10 @@ On Arch, the installed hook path is:
 The hook runs:
 
 ```bash
-/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov backup-now
+/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook backup-now
 ```
+
+Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; they are not automatically activated in EFI or the bootloader. If there is not enough space for a pre-transaction snapshot, the hook prints a warning and skips the snapshot so the package transaction is not blocked. Other errors still fail the hook.
 
 Current trigger targets:
 
@@ -522,6 +526,10 @@ Main implementation:
 - [`cmd/bootrecov/main.go`](cmd/bootrecov/main.go)
 - [`internal/tui/backups.go`](internal/tui/backups.go)
 - [`internal/tui/model.go`](internal/tui/model.go)
+
+Roadmap and support planning:
+
+- [`docs/roadmap/`](docs/roadmap/README.md)
 
 ## Caveats
 

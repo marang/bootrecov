@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,7 +62,7 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 
 func fakeCreateModuleImage(src, dst string) error {
 	if !dirExists(src) {
-		return fmt.Errorf("source module tree does not exist: %s", src)
+		return fmt.Errorf("%w: source module tree does not exist: %s", ErrSourceDirectoryMissing, src)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -274,6 +275,36 @@ func writeFile(t *testing.T, path string) {
 	}
 }
 
+func writeExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func setFreeBytes(t *testing.T, freeBytes int64) {
+	t.Helper()
+	old := statfsFunc
+	statfsFunc = func(_ string, st *syscall.Statfs_t) error {
+		st.Bavail = uint64(freeBytes)
+		st.Bsize = 1
+		return nil
+	}
+	t.Cleanup(func() { statfsFunc = old })
+}
+
+func containsStringWithPrefix(values []string, prefix string) bool {
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func makeBootableBackup(t *testing.T, root, name string) {
 	t.Helper()
 	dir := filepath.Join(root, name)
@@ -331,15 +362,17 @@ func TestCheckRuntimeDependenciesReportsMissingTools(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing dependency error")
 	}
-	text := err.Error()
-	if !strings.Contains(text, "definitely-missing-rclone") {
-		t.Fatalf("expected rclone in error, got: %s", text)
+	if !errors.Is(err, ErrRuntimeDependenciesMissing) {
+		t.Fatalf("expected missing dependency error, got: %v", err)
 	}
-	if !strings.Contains(text, "definitely-missing-grub-mkconfig") {
-		t.Fatalf("expected grub-mkconfig in error, got: %s", text)
+	var depsErr *RuntimeDependenciesError
+	if !errors.As(err, &depsErr) {
+		t.Fatalf("expected RuntimeDependenciesError, got: %T", err)
 	}
-	if !strings.Contains(text, "definitely-missing-mksquashfs") {
-		t.Fatalf("expected mksquashfs in error, got: %s", text)
+	for _, want := range []string{"definitely-missing-rclone", "definitely-missing-grub-mkconfig", "definitely-missing-mksquashfs"} {
+		if !containsStringWithPrefix(depsErr.Missing, want) {
+			t.Fatalf("expected missing dependency %q in %#v", want, depsErr.Missing)
+		}
 	}
 }
 
@@ -351,7 +384,7 @@ func TestNewModelFailsEarlyWhenDependenciesMissing(t *testing.T) {
 	RcloneBin = "definitely-missing-rclone"
 
 	_, err := NewModel()
-	if err == nil || !strings.Contains(err.Error(), "required dependencies are missing") {
+	if !errors.Is(err, ErrRuntimeDependenciesMissing) {
 		t.Fatalf("expected startup dependency error, got %v", err)
 	}
 }
@@ -464,7 +497,7 @@ func TestSyncBackupsAndGrubRequiresEFIMountBeforeMutation(t *testing.T) {
 	}
 
 	_, _, err := SyncBackupsAndGrub()
-	if err == nil || !strings.Contains(err.Error(), "EFI mount") {
+	if !errors.Is(err, ErrEFIMountUnavailable) {
 		t.Fatalf("expected EFI mount error, got %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(efi, "active")); !os.IsNotExist(statErr) {
@@ -478,7 +511,7 @@ func TestAddGrubEntryRequiresSyncedPair(t *testing.T) {
 
 	makeBootableBackup(t, efi, "only-efi")
 	err := AddGrubEntry(BootBackup{Name: "only-efi", Path: filepath.Join(efi, "only-efi")})
-	if err == nil || !strings.Contains(err.Error(), "not activated in EFI") {
+	if !errors.Is(err, ErrBackupNotActivated) {
 		t.Fatalf("expected activation error, got: %v", err)
 	}
 }
@@ -523,7 +556,7 @@ func TestAddGrubEntryRejectsStaleEFIMirrorMissingBootArtifacts(t *testing.T) {
 	writeFile(t, filepath.Join(efi, "stale", "vmlinuz"))
 
 	err := AddGrubEntry(BootBackup{Name: "stale"})
-	if err == nil || !strings.Contains(err.Error(), "not activated in EFI") {
+	if !errors.Is(err, ErrBackupNotActivated) {
 		t.Fatalf("expected stale EFI mirror rejection, got %v", err)
 	}
 }
@@ -535,7 +568,7 @@ func TestBootloaderOperationsRejectUnsupportedSystemdBoot(t *testing.T) {
 	activeBootloaderName = "systemd-boot"
 
 	err := ActivateBackup("anything")
-	if err == nil || !strings.Contains(err.Error(), "not supported yet") {
+	if !errors.Is(err, ErrUnsupportedBootloader) {
 		t.Fatalf("expected unsupported bootloader error, got %v", err)
 	}
 }
@@ -631,11 +664,78 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	if !strings.Contains(text, "Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov backup-now") {
+	if !strings.Contains(text, "Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now") {
 		t.Fatalf("unexpected hook content: %s", text)
 	}
 	if !strings.Contains(text, "Target = linux*") || !strings.Contains(text, "Target = grub") {
 		t.Fatalf("expected boot-critical package targets in hook: %s", text)
+	}
+}
+
+func TestIsInsufficientSpaceError(t *testing.T) {
+	cases := []error{
+		fmt.Errorf("%w: need 1GiB, snapshot free=1MiB", ErrInsufficientSnapshotSpace),
+		fmt.Errorf("%w", ErrInsufficientEFISpace),
+	}
+	for _, err := range cases {
+		if !IsInsufficientSpaceError(err) {
+			t.Fatalf("expected space error for %v", err)
+		}
+	}
+	if IsInsufficientSpaceError(fmt.Errorf("%w", os.ErrPermission)) {
+		t.Fatal("permission error should not be treated as space error")
+	}
+}
+
+func TestFilesystemENOSPCMapsToTypedSpaceErrors(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+
+	snapshotErr := wrapFilesystemWriteError(filepath.Join(snap, "file"), &os.PathError{Op: "write", Path: filepath.Join(snap, "file"), Err: syscall.ENOSPC})
+	if !errors.Is(snapshotErr, ErrInsufficientSnapshotSpace) {
+		t.Fatalf("expected snapshot space error, got %v", snapshotErr)
+	}
+
+	efiErr := wrapFilesystemWriteError(filepath.Join(efi, "file"), &os.PathError{Op: "write", Path: filepath.Join(efi, "file"), Err: syscall.ENOSPC})
+	if !errors.Is(efiErr, ErrInsufficientEFISpace) {
+		t.Fatalf("expected EFI space error, got %v", efiErr)
+	}
+
+	permissionErr := wrapFilesystemWriteError(filepath.Join(snap, "file"), &os.PathError{Op: "write", Path: filepath.Join(snap, "file"), Err: os.ErrPermission})
+	if IsInsufficientSpaceError(permissionErr) {
+		t.Fatalf("permission error should not be classified as space error: %v", permissionErr)
+	}
+}
+
+func TestExternalWriteFailureMapsLowFreeSpaceToTypedError(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	setFreeBytes(t, lowFreeSpaceThreshold-1)
+
+	rclone := filepath.Join(t.TempDir(), "rclone")
+	writeExecutable(t, rclone, "#!/bin/sh\nexit 23\n")
+	RcloneBin = rclone
+	RequireRclone = true
+
+	err := runRcloneSync(boot, filepath.Join(snap, "dst"), nil, nil)
+	if !errors.Is(err, ErrSyncFailed) {
+		t.Fatalf("expected sync error, got %v", err)
+	}
+	if !errors.Is(err, ErrInsufficientSnapshotSpace) {
+		t.Fatalf("expected low free space to classify as snapshot space error, got %v", err)
+	}
+
+	mksquashfs := filepath.Join(t.TempDir(), "mksquashfs")
+	writeExecutable(t, mksquashfs, "#!/bin/sh\nexit 1\n")
+	MksquashfsBin = mksquashfs
+	RequireMksquashfs = true
+
+	err = createSquashFSModuleImage(boot, filepath.Join(efi, "modules.sqfs"))
+	if !errors.Is(err, ErrCommandFailed) {
+		t.Fatalf("expected command error, got %v", err)
+	}
+	if !errors.Is(err, ErrInsufficientEFISpace) {
+		t.Fatalf("expected low free space to classify as EFI space error, got %v", err)
 	}
 }
 
@@ -644,7 +744,7 @@ func TestInstallPacmanHookRejectsWhitespacePath(t *testing.T) {
 	setTestGlobals(t, boot, snap, efi, grub)
 
 	err := InstallPacmanHook("/usr/local/bin/boot recov")
-	if err == nil || !strings.Contains(err.Error(), "must not contain whitespace") {
+	if !errors.Is(err, ErrHookExecutablePath) {
 		t.Fatalf("expected whitespace path error, got %v", err)
 	}
 }
@@ -657,7 +757,7 @@ func TestInstallPacmanHookRejectsUbuntuUntilAptHookExists(t *testing.T) {
 	activeHookSupported = false
 
 	err := InstallPacmanHook("/usr/bin/bootrecov")
-	if err == nil || !strings.Contains(err.Error(), "apt/dpkg hook support is planned") {
+	if !errors.Is(err, ErrUnsupportedPackageHook) {
 		t.Fatalf("expected planned apt hook error, got %v", err)
 	}
 }
@@ -668,7 +768,7 @@ func TestRecoveryCommandsRequireActivatedBackup(t *testing.T) {
 
 	makeBootableBackup(t, snap, "cold")
 	_, err := RecoveryCommands("cold")
-	if err == nil || !strings.Contains(err.Error(), "not activated in EFI") {
+	if !errors.Is(err, ErrBackupNotActivated) {
 		t.Fatalf("expected activation error, got %v", err)
 	}
 }
@@ -727,14 +827,14 @@ func TestRejectsPathTraversalBackupNames(t *testing.T) {
 		{"../escape", DeactivateBackup("../escape")},
 		{"../escape", DeleteBackup("../escape")},
 	} {
-		if tc.err == nil || !strings.Contains(tc.err.Error(), "invalid backup name") {
+		if !errors.Is(tc.err, ErrInvalidBackupName) {
 			t.Fatalf("expected invalid backup name for %q, got %v", tc.name, tc.err)
 		}
 	}
-	if _, err := RecoveryCommands("../escape"); err == nil || !strings.Contains(err.Error(), "invalid backup name") {
+	if _, err := RecoveryCommands("../escape"); !errors.Is(err, ErrInvalidBackupName) {
 		t.Fatalf("expected invalid backup name for RecoveryCommands, got %v", err)
 	}
-	if err := AddGrubEntry(BootBackup{Name: "../escape"}); err == nil || !strings.Contains(err.Error(), "invalid backup name") {
+	if err := AddGrubEntry(BootBackup{Name: "../escape"}); !errors.Is(err, ErrInvalidBackupName) {
 		t.Fatalf("expected invalid backup name for AddGrubEntry, got %v", err)
 	}
 }
@@ -750,7 +850,7 @@ func TestActivateBackupRequiresEFIMountWhenEnabled(t *testing.T) {
 	makeBootableBackup(t, snap, "cold")
 
 	err := ActivateBackup("cold")
-	if err == nil || !strings.Contains(err.Error(), "EFI mount") {
+	if !errors.Is(err, ErrEFIMountUnavailable) {
 		t.Fatalf("expected EFI mount error, got %v", err)
 	}
 }
@@ -992,7 +1092,7 @@ func TestAddGrubEntryRejectsMissingRootModuleTree(t *testing.T) {
 	makeVersionedBootableBackup(t, efi, "old", "6.6.7-arch1-1")
 
 	err := AddGrubEntry(BootBackup{Name: "old"})
-	if err == nil || !strings.Contains(err.Error(), "matching root module tree is missing") {
+	if !errors.Is(err, ErrRootModulesMissing) {
 		t.Fatalf("expected missing module tree error, got %v", err)
 	}
 }
@@ -1005,7 +1105,7 @@ func TestActivateBackupDoesNotInstallArchivedRootModules(t *testing.T) {
 	writeFile(t, archivedModuleImagePath(filepath.Join(snap, "old"), version))
 
 	err := ActivateBackup("old")
-	if err == nil || !strings.Contains(err.Error(), "activation does not write to the root filesystem") {
+	if !errors.Is(err, ErrArchivedModulesUnsafe) {
 		t.Fatalf("expected no root filesystem write error, got %v", err)
 	}
 	if _, statErr := os.Stat(filepath.Join(RootModulesDir, version)); !os.IsNotExist(statErr) {
@@ -1113,16 +1213,10 @@ func TestCheckBackupSpaceInsufficient(t *testing.T) {
 	setTestGlobals(t, boot, snap, efi, grub)
 	writeFile(t, filepath.Join(boot, "vmlinuz"))
 	writeFile(t, filepath.Join(boot, "initrd.img"))
-	old := statfsFunc
-	statfsFunc = func(_ string, st *syscall.Statfs_t) error {
-		st.Bavail = 1
-		st.Bsize = 1
-		return nil
-	}
-	t.Cleanup(func() { statfsFunc = old })
+	setFreeBytes(t, 1)
 
-	if err := checkSnapshotSpace(); err == nil {
-		t.Fatal("expected insufficient space error")
+	if err := checkSnapshotSpace(); !errors.Is(err, ErrInsufficientSnapshotSpace) {
+		t.Fatalf("expected insufficient space error, got %v", err)
 	}
 }
 

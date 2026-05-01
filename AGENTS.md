@@ -172,7 +172,10 @@ Current trigger set:
 
 Current Arch action:
 
-- run `/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov backup-now` before the transaction
+- run `/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook backup-now` before the transaction
+- hook-created snapshots are not activated in EFI or the bootloader automatically
+- if snapshot space is insufficient, the hook prints a warning and exits successfully so the package transaction is not blocked
+- non-space errors still fail the hook
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.
 
@@ -268,12 +271,17 @@ Do not:
   view helper placeholder
 - `test/bootvm/`
   rootless QEMU integration harness and related scripts
+- `docs/roadmap/`
+  active roadmap for distro support, bootloader support, testing gates, and release gates
+- `plan/bootrecov-recovery-platform-roadmap.md`
+  compatibility pointer to `docs/roadmap/`
 - `docker-compose.yml`
   legacy privileged/container-based boot test path kept for reference
 
 ## Contributor Expectations
 
 - Keep `README.md` and `AGENTS.md` aligned with actual repo behavior.
+- Keep `docs/roadmap/` aligned with support status when changing distro or bootloader behavior.
 - Prefer updating tests together with behavior changes.
 - Do not describe future ideas as current features.
 - Treat bootloader entry safety and recovery availability as high-priority correctness concerns.

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"crypto/sha1"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -78,6 +79,7 @@ const (
 	kernelCmdlineMarker   = "bootrecov_entry="
 	bootrecovMetadataRoot = ".bootrecov"
 	moduleArchiveRoot     = ".bootrecov/root-modules"
+	lowFreeSpaceThreshold = int64(1024 * 1024)
 )
 
 var backupNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -94,7 +96,7 @@ func CreateBootBackupNow() (BootBackup, error) {
 	snapshotTarget := filepath.Join(SnapshotDir, stamp)
 
 	if err := os.MkdirAll(snapshotTarget, 0o755); err != nil {
-		return BootBackup{}, err
+		return BootBackup{}, wrapFilesystemWriteError(snapshotTarget, err)
 	}
 
 	if err := copyBootSourceToSnapshot(snapshotTarget); err != nil {
@@ -118,10 +120,10 @@ func InstallPacmanHook(executablePath string) error {
 	}
 	executablePath = filepath.Clean(strings.TrimSpace(executablePath))
 	if !filepath.IsAbs(executablePath) {
-		return fmt.Errorf("hook executable path must be absolute: %s", executablePath)
+		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must be absolute"}
 	}
 	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
-		return fmt.Errorf("hook executable path must not contain whitespace: %q", executablePath)
+		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must not contain whitespace"}
 	}
 	if err := os.MkdirAll(filepath.Dir(PacmanHookPath), 0o755); err != nil {
 		return err
@@ -143,7 +145,7 @@ Target = systemd
 [Action]
 Description = Creating bootrecov snapshot before boot-critical package transaction...
 When = PreTransaction
-Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s backup-now
+Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s hook backup-now
 `, executablePath)
 }
 
@@ -160,7 +162,7 @@ func defaultHookExecutablePath() string {
 func CheckRuntimeDependencies() error {
 	var missing []string
 	if err := ensureSupportedBootloader(); err != nil {
-		missing = append(missing, err.Error())
+		missing = append(missing, fmt.Sprintf("bootloader %q (not supported yet)", currentBootloaderID()))
 	}
 	if RequireRclone {
 		if strings.TrimSpace(RcloneBin) == "" {
@@ -186,7 +188,7 @@ func CheckRuntimeDependencies() error {
 	if len(missing) == 0 {
 		return nil
 	}
-	return fmt.Errorf("bootrecov cannot start because required dependencies are missing:\n- %s", strings.Join(missing, "\n- "))
+	return &RuntimeDependenciesError{Missing: missing}
 }
 
 // RefreshBackupsAndGrub loads current backups and GRUB entries without
@@ -339,13 +341,13 @@ func listBackupNames() ([]string, error) {
 func validateBackupName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return fmt.Errorf("invalid backup name")
+		return &BackupNameError{Name: name}
 	}
 	if filepath.IsAbs(name) || name != filepath.Base(name) || name == backupNameCurrentDir || name == backupNameParentDir {
-		return fmt.Errorf("invalid backup name: %q", name)
+		return &BackupNameError{Name: name}
 	}
 	if !backupNamePattern.MatchString(name) {
-		return fmt.Errorf("invalid backup name: %q", name)
+		return &BackupNameError{Name: name}
 	}
 	return nil
 }
@@ -463,7 +465,8 @@ func validateRootModuleCompatibility(b BootBackup) error {
 	}
 	if b.HasArchivedModules {
 		return fmt.Errorf(
-			"snapshot %q uses kernel %s and has archived modules at %s, but matching root module tree is missing: %s; activation does not write to the root filesystem",
+			"%w: snapshot %q uses kernel %s and has archived modules at %s, but matching root module tree is missing: %s; activation does not write to the root filesystem",
+			ErrArchivedModulesUnsafe,
 			b.Name,
 			b.KernelVersion,
 			b.ArchivedModuleTree,
@@ -471,7 +474,8 @@ func validateRootModuleCompatibility(b BootBackup) error {
 		)
 	}
 	return fmt.Errorf(
-		"snapshot %q uses kernel %s but matching root module tree is missing: %s; booting this entry is likely to enter emergency or maintenance mode",
+		"%w: snapshot %q uses kernel %s but matching root module tree is missing: %s; booting this entry is likely to enter emergency or maintenance mode",
+		ErrRootModulesMissing,
 		b.Name,
 		b.KernelVersion,
 		b.RootModuleTree,
@@ -490,7 +494,7 @@ func archiveRootModulesForSnapshot(b *BootBackup) error {
 	}
 	dst := archivedModuleImagePath(b.SnapshotPath, b.KernelVersion)
 	if err := createModuleImageFunc(b.RootModuleTree, dst); err != nil {
-		return fmt.Errorf("archive kernel modules for %s: %w", b.KernelVersion, err)
+		return fmt.Errorf("%w: archive kernel modules for %s: %w", ErrModuleArchiveFailed, b.KernelVersion, err)
 	}
 	b.ArchivedModuleTree = dst
 	b.HasArchivedModules = true
@@ -499,24 +503,25 @@ func archiveRootModulesForSnapshot(b *BootBackup) error {
 
 func createSquashFSModuleImage(src, dst string) error {
 	if strings.TrimSpace(MksquashfsBin) == "" {
-		return fmt.Errorf("mksquashfs is required but not configured")
+		return fmt.Errorf("%w: mksquashfs is required but not configured", ErrRequiredToolUnavailable)
 	}
 	if _, err := exec.LookPath(MksquashfsBin); err != nil {
-		return fmt.Errorf("mksquashfs is required for module archive but was not found in PATH")
+		return fmt.Errorf("%w: mksquashfs is required for module archive but was not found in PATH", ErrRequiredToolUnavailable)
 	}
 	if !dirExists(src) {
-		return fmt.Errorf("source module tree does not exist: %s", src)
+		return fmt.Errorf("%w: source module tree does not exist: %s", ErrSourceDirectoryMissing, src)
 	}
 	if fileExists(dst) {
-		return fmt.Errorf("module archive already exists: %s", dst)
+		return fmt.Errorf("%w: %s", ErrModuleArchiveExists, dst)
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return wrapFilesystemWriteError(dst, err)
 	}
 	cmd := exec.Command(MksquashfsBin, src, dst, "-comp", "zstd", "-Xcompression-level", "15", "-noappend")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("mksquashfs failed: %w: %s", err, strings.TrimSpace(string(out)))
+		commandErr := fmt.Errorf("%w: mksquashfs: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
+		return wrapExternalWriteFailure(dst, commandErr)
 	}
 	return nil
 }
@@ -531,7 +536,7 @@ func currentRunningKernelVersion() string {
 
 func ensureEFIMirrorFromSnapshot(b *BootBackup) error {
 	if !b.HasSnapshot {
-		return fmt.Errorf("snapshot missing for %q", b.Name)
+		return fmt.Errorf("%w: %q", ErrBackupNotFound, b.Name)
 	}
 	if err := ensureEFIMountAvailable(); err != nil {
 		return err
@@ -552,7 +557,7 @@ func ensureEFIMirrorFromSnapshot(b *BootBackup) error {
 		if !hadEFI {
 			_ = os.RemoveAll(b.EFIPath)
 		}
-		return fmt.Errorf("EFI mirror for %q is missing required boot artifacts after sync", b.Name)
+		return fmt.Errorf("%w: EFI mirror for %q is missing required boot artifacts after sync", ErrBackupIncomplete, b.Name)
 	}
 	return nil
 }
@@ -858,11 +863,12 @@ func checkSnapshotSpace() error {
 	}
 	snapshotFree, err := freeBytesAt(SnapshotDir)
 	if err != nil {
-		return fmt.Errorf("unable to check free space for %s: %w", SnapshotDir, err)
+		return fmt.Errorf("%w: unable to check free space for %s: %w", ErrFreeSpaceCheckFailed, SnapshotDir, err)
 	}
 	if snapshotFree < estimate {
 		return fmt.Errorf(
-			"insufficient free space (need %s): snapshot free=%s",
+			"%w: need %s, snapshot free=%s",
+			ErrInsufficientSnapshotSpace,
 			formatBytes(estimate),
 			formatBytes(snapshotFree),
 		)
@@ -878,11 +884,12 @@ func checkEFISpaceForSnapshot(snapshotPath string) error {
 	need := int64(float64(size)*1.10) + 16*1024*1024
 	efiFree, err := freeBytesAt(EfiDir)
 	if err != nil {
-		return fmt.Errorf("unable to check free space for %s: %w", EfiDir, err)
+		return fmt.Errorf("%w: unable to check free space for %s: %w", ErrFreeSpaceCheckFailed, EfiDir, err)
 	}
 	if efiFree < need {
 		return fmt.Errorf(
-			"insufficient EFI free space to activate backup (need %s, free %s)",
+			"%w to activate backup: need %s, free %s",
+			ErrInsufficientEFISpace,
 			formatBytes(need),
 			formatBytes(efiFree),
 		)
@@ -897,10 +904,10 @@ func ensureEFIMountAvailable() error {
 	mountRoot := filepath.Clean(filepath.Dir(EfiDir))
 	mountPoint, err := findMountPoint(mountRoot)
 	if err != nil {
-		return fmt.Errorf("unable to verify EFI mount %s: %w", mountRoot, err)
+		return &EFIMountError{MountRoot: mountRoot, Cause: err}
 	}
 	if filepath.Clean(mountPoint) != mountRoot {
-		return fmt.Errorf("EFI mount %s is not mounted (nearest mount point: %s)", mountRoot, mountPoint)
+		return &EFIMountError{MountRoot: mountRoot, MountPoint: mountPoint}
 	}
 	return nil
 }
@@ -1071,10 +1078,10 @@ func ActivateBackup(name string) error {
 	canonical := buildBackupFromName(name)
 	refreshBackupCompleteness(&canonical)
 	if !canonical.HasSnapshot {
-		return fmt.Errorf("snapshot %q does not exist", name)
+		return fmt.Errorf("%w: %q", ErrBackupNotFound, name)
 	}
 	if !canonical.HasKernel || !canonical.HasInitramfs {
-		return fmt.Errorf("snapshot %q is incomplete", name)
+		return fmt.Errorf("%w: snapshot %q is incomplete", ErrBackupIncomplete, name)
 	}
 	if err := validateRootModuleCompatibility(canonical); err != nil {
 		return err
@@ -1129,21 +1136,21 @@ func syncDirContentsWithFilters(src, dst string, excludes, includes []string) er
 		return nil
 	}
 	if !dirExists(src) {
-		return fmt.Errorf("source directory does not exist: %s", src)
+		return fmt.Errorf("%w: %s", ErrSourceDirectoryMissing, src)
 	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
-		return err
+		return wrapFilesystemWriteError(dst, err)
 	}
 
 	if RcloneBin == "" {
 		if RequireRclone {
-			return fmt.Errorf("rclone is required but not configured")
+			return fmt.Errorf("%w: rclone is required but not configured", ErrRequiredToolUnavailable)
 		}
 		return fallbackSyncCopy(src, dst, normalizeFallbackExcludes(src, excludes))
 	}
 	if _, err := exec.LookPath(RcloneBin); err != nil {
 		if RequireRclone {
-			return fmt.Errorf("rclone is required for backup sync but was not found in PATH")
+			return fmt.Errorf("%w: rclone is required for backup sync but was not found in PATH", ErrRequiredToolUnavailable)
 		}
 		return fallbackSyncCopy(src, dst, normalizeFallbackExcludes(src, excludes))
 	}
@@ -1157,7 +1164,8 @@ func runRcloneSync(src, dst string, excludes, includes []string) error {
 	cmd := exec.Command(RcloneBin, args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("rclone sync failed: %w: %s", err, strings.TrimSpace(string(out)))
+		syncErr := fmt.Errorf("%w: rclone: %w: %s", ErrSyncFailed, err, strings.TrimSpace(string(out)))
+		return wrapExternalWriteFailure(dst, syncErr)
 	}
 	return nil
 }
@@ -1315,7 +1323,7 @@ func isExcludedPath(path string, excludes []string) bool {
 
 func copyRegularFile(src, dst string, mode os.FileMode) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return wrapFilesystemWriteError(dst, err)
 	}
 	in, err := os.Open(src)
 	if err != nil {
@@ -1325,24 +1333,62 @@ func copyRegularFile(src, dst string, mode os.FileMode) error {
 
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, mode)
 	if err != nil {
-		return err
+		return wrapFilesystemWriteError(dst, err)
 	}
-	defer out.Close()
 
 	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return wrapFilesystemWriteError(dst, err)
+	}
+	if err := out.Chmod(mode); err != nil {
+		_ = out.Close()
 		return err
 	}
-	return out.Chmod(mode)
+	return wrapFilesystemWriteError(dst, out.Close())
 }
 
 func copySymlink(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return err
+		return wrapFilesystemWriteError(dst, err)
 	}
 	link, err := os.Readlink(src)
 	if err != nil {
 		return err
 	}
 	_ = os.Remove(dst)
-	return os.Symlink(link, dst)
+	return wrapFilesystemWriteError(dst, os.Symlink(link, dst))
+}
+
+func wrapFilesystemWriteError(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, syscall.ENOSPC) {
+		return fmt.Errorf("%w: %w", insufficientSpaceErrorForPath(path), err)
+	}
+	return err
+}
+
+func wrapExternalWriteFailure(path string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isLowFreeSpaceAt(path) {
+		return fmt.Errorf("%w: %w", insufficientSpaceErrorForPath(path), err)
+	}
+	return err
+}
+
+func insufficientSpaceErrorForPath(path string) error {
+	clean := filepath.Clean(path)
+	efiRoot := filepath.Clean(EfiDir)
+	if clean == efiRoot || strings.HasPrefix(clean, efiRoot+string(os.PathSeparator)) {
+		return ErrInsufficientEFISpace
+	}
+	return ErrInsufficientSnapshotSpace
+}
+
+func isLowFreeSpaceAt(path string) bool {
+	free, err := freeBytesAt(path)
+	return err == nil && free < lowFreeSpaceThreshold
 }
