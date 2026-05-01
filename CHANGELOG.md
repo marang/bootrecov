@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.4.1 - 2026-05-01
+
+### Changed
+
+- Interactive risk acknowledgement now uses a bordered warning panel with a `y/N` confirmation instead of requiring a typed phrase.
+
 ## v0.4.0 - 2026-05-01
 
 ### Added

@@ -12,7 +12,7 @@ It is aimed at Linux EFI systems where you want a simple recovery path for kerne
 
 Bootrecov touches boot-critical files and can make a system unbootable. It is provided without warranty, and you use it entirely at your own risk.
 
-Every TUI or CLI invocation requires an explicit acknowledgement. Interactive runs ask you to type `I UNDERSTAND`. Non-interactive automation must pass `--yes-i-understand` or set `BOOTRECOV_ACCEPT_RISK=1` for that invocation.
+Every TUI or CLI invocation requires an explicit acknowledgement. Interactive runs ask for a `y/N` confirmation in a bordered prompt. Non-interactive automation must pass `--yes-i-understand` or set `BOOTRECOV_ACCEPT_RISK=1` for that invocation.
 
 ## What It Can Do
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/spf13/cobra"
 
 	"github.com/marang/bootrecov/internal/tui"
@@ -18,7 +19,6 @@ import (
 
 const (
 	riskAcceptEnv     = "BOOTRECOV_ACCEPT_RISK"
-	riskAcceptPhrase  = "I UNDERSTAND"
 	riskAcceptFlagMsg = "acknowledge that bootrecov has no warranty and is used at your own risk"
 )
 
@@ -27,6 +27,9 @@ var (
 	errRiskAcknowledgementRejected = errors.New("risk acknowledgement rejected")
 	riskAccepted                   bool
 	createBootBackupNow            = tui.CreateBootBackupNow
+	riskPromptStyle                = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("214")).Padding(0, 1)
+	riskTitleStyle                 = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	riskMutedStyle                 = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 func main() {
@@ -406,17 +409,33 @@ func requireRiskAcknowledgement() error {
 	if !stdinIsTerminal() {
 		return fmt.Errorf("%w; rerun with --yes-i-understand or %s=1", errRiskAcknowledgementRequired, riskAcceptEnv)
 	}
-	fmt.Fprintln(os.Stderr, "bootrecov modifies boot-critical files and can make a system unbootable.")
-	fmt.Fprintln(os.Stderr, "There is no warranty. You use this software entirely at your own risk.")
-	fmt.Fprintf(os.Stderr, "Type %q to continue: ", riskAcceptPhrase)
+	fmt.Fprint(os.Stderr, renderRiskAcknowledgementPrompt())
 	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(line) != riskAcceptPhrase {
+	if !riskConfirmationAccepted(line) {
 		return errRiskAcknowledgementRejected
 	}
 	return nil
+}
+
+func renderRiskAcknowledgementPrompt() string {
+	body := strings.Join([]string{
+		riskTitleStyle.Render("Bootrecov risk acknowledgement"),
+		"Bootrecov modifies boot-critical files and can make a system unbootable.",
+		"There is no warranty. You use this software entirely at your own risk.",
+	}, "\n")
+	return riskPromptStyle.Render(body) + "\n" + riskMutedStyle.Render("Continue? [y/N] ")
+}
+
+func riskConfirmationAccepted(input string) bool {
+	switch strings.ToLower(strings.TrimSpace(input)) {
+	case "y", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 func riskAcceptedFromEnv() bool {

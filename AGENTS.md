@@ -88,7 +88,7 @@ Compatibility aliases retained:
 
 These commands are implemented in [`cmd/bootrecov/main.go`](cmd/bootrecov/main.go).
 
-Every TUI or CLI invocation requires explicit per-run risk acknowledgement. Interactive runs prompt for `I UNDERSTAND`; non-interactive automation must pass `--yes-i-understand` or set `BOOTRECOV_ACCEPT_RISK=1`.
+Every TUI or CLI invocation requires explicit per-run risk acknowledgement. Interactive runs prompt for `y/N` confirmation; non-interactive automation must pass `--yes-i-understand` or set `BOOTRECOV_ACCEPT_RISK=1`.
 
 ## TUI Controls
 
