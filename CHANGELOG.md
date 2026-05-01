@@ -11,7 +11,6 @@
 - Central snapshot-name validation for path-sensitive operations.
 - Rootless VM E2E coverage for SquashFS archives, missing old-kernel modules, GRUB boot, and booting after primary kernel corruption.
 - Watch-mode VM pane with runner activity and setup progress logs.
-- Review documentation under `.docs/review/`.
 
 ### Changed
 

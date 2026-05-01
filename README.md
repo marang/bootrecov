@@ -1,5 +1,9 @@
 # bootrecov
 
+<p align="center">
+  <img src="docs/assets/bootrecov-logo.png" alt="bootrecov logo" width="220">
+</p>
+
 `bootrecov` is a Linux-only CLI and TUI for creating inspectable `/boot` recovery snapshots and exposing selected snapshots as GRUB fallback boot entries.
 
 It is aimed at Arch/GRUB/EFI systems where you want a simple recovery path for kernel, initramfs, microcode, and GRUB state without doing a full root filesystem rollback.
