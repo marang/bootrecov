@@ -3,6 +3,8 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -37,6 +39,25 @@ func TestHookBackupNowReturnsNonSpaceErrors(t *testing.T) {
 	cmd.SetArgs([]string{"hook", "backup-now"})
 	if err := cmd.Execute(); !errors.Is(err, expected) {
 		t.Fatalf("hook backup-now should return non-space errors, got %v", err)
+	}
+}
+
+func TestHookUninstallRemovesHook(t *testing.T) {
+	oldHookPath := tui.PacmanHookPath
+	tui.PacmanHookPath = filepath.Join(t.TempDir(), "bootrecov.hook")
+	t.Cleanup(func() { tui.PacmanHookPath = oldHookPath })
+	if err := os.WriteFile(tui.PacmanHookPath, []byte("hook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(riskAcceptEnv, "1")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"hook", "uninstall"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("hook uninstall failed: %v", err)
+	}
+	if _, err := os.Stat(tui.PacmanHookPath); !os.IsNotExist(err) {
+		t.Fatalf("expected hook to be removed, err=%v", err)
 	}
 }
 

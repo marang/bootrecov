@@ -672,6 +672,38 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 	}
 }
 
+func TestUninstallPacmanHookRemovesHookWhenPresent(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+
+	if err := InstallPacmanHook("/usr/bin/bootrecov"); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := UninstallPacmanHook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatal("expected hook to be removed")
+	}
+	if _, err := os.Stat(PacmanHookPath); !os.IsNotExist(err) {
+		t.Fatalf("expected hook path to be gone, err=%v", err)
+	}
+}
+
+func TestUninstallPacmanHookIsIdempotent(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+
+	removed, err := UninstallPacmanHook()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if removed {
+		t.Fatal("missing hook should not report removed")
+	}
+}
+
 func TestIsInsufficientSpaceError(t *testing.T) {
 	cases := []error{
 		fmt.Errorf("%w: need 1GiB, snapshot free=1MiB", ErrInsufficientSnapshotSpace),

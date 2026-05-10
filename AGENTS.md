@@ -79,6 +79,8 @@ The binary currently supports:
   Reconciles EFI mirrors and GRUB state.
 - `bootrecov hook install [absolute-binary-path]`
   Installs or refreshes the platform package-manager hook. Currently implemented only for Arch/pacman.
+- `bootrecov hook uninstall`
+  Removes the platform package-manager hook when present.
 
 Compatibility aliases retained:
 
@@ -128,6 +130,7 @@ Normal operation typically requires elevated privileges because the app writes t
 - `/boot/efi/bootrecov-snapshots`
 - `/etc/grub.d/41_bootrecov_snapshots`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` on Arch
+  This hook is created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package.
 
 Environment overrides:
 

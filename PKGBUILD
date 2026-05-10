@@ -9,6 +9,7 @@ license=('MIT')
 depends=('rclone' 'grub' 'squashfs-tools')
 makedepends=('go')
 options=('!debug')
+install="${pkgname}.install"
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

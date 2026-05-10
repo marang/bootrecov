@@ -242,6 +242,12 @@ bootrecov hook install
 bootrecov hook install /absolute/path/to/bootrecov
 ```
 
+Remove the package-manager hook:
+
+```bash
+bootrecov hook uninstall
+```
+
 Hook installation is currently implemented for Arch/pacman. Ubuntu/Debian apt/dpkg hook support is planned but intentionally not enabled yet.
 
 Compatibility aliases retained for existing automation:
@@ -353,6 +359,8 @@ The hook runs:
 ```
 
 Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; they are not automatically activated in EFI or the bootloader. If there is not enough space for a pre-transaction snapshot, the hook prints a warning and skips the snapshot so the package transaction is not blocked. Other errors still fail the hook.
+
+The Arch package removal script also removes `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` when uninstalling `bootrecov`, so a stale hook does not remain pointed at a missing binary.
 
 Current trigger targets:
 

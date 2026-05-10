@@ -147,6 +147,23 @@ func newHookCmd() *cobra.Command {
 			return nil
 		},
 	}
+	uninstallCmd := &cobra.Command{
+		Use:   "uninstall",
+		Short: "Remove the package-manager hook",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			removed, err := tui.UninstallPacmanHook()
+			if err != nil {
+				return err
+			}
+			if removed {
+				fmt.Printf("removed package-manager hook at %s\n", tui.PacmanHookPath)
+				return nil
+			}
+			fmt.Printf("package-manager hook not installed at %s\n", tui.PacmanHookPath)
+			return nil
+		},
+	}
 	backupNowCmd := &cobra.Command{
 		Use:    "backup-now",
 		Hidden: true,
@@ -164,7 +181,7 @@ func newHookCmd() *cobra.Command {
 			return nil
 		},
 	}
-	hookCmd.AddCommand(installCmd, backupNowCmd)
+	hookCmd.AddCommand(installCmd, uninstallCmd, backupNowCmd)
 	return hookCmd
 }
 

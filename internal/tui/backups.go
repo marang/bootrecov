@@ -131,6 +131,16 @@ func InstallPacmanHook(executablePath string) error {
 	return os.WriteFile(PacmanHookPath, []byte(renderPacmanHook(executablePath)), 0o644)
 }
 
+func UninstallPacmanHook() (bool, error) {
+	if err := os.Remove(PacmanHookPath); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
 func renderPacmanHook(executablePath string) string {
 	return fmt.Sprintf(`[Trigger]
 Operation = Install
