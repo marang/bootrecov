@@ -8,33 +8,40 @@ url='https://github.com/marang/bootrecov'
 license=('MIT')
 depends=('rclone' 'grub' 'squashfs-tools')
 makedepends=('go')
+options=('!debug')
 source=("${pkgname}-${pkgver}.tar.gz::${url}/archive/refs/tags/v${pkgver}.tar.gz")
 sha256sums=('SKIP')
 
-_make_go_modcache_writable() {
+_export_go_build_env() {
+  export GOPATH="${srcdir}/gopath"
+  export GOMODCACHE="${GOPATH}/pkg/mod"
+  export GOCACHE="${srcdir}/gocache"
+  export GOFLAGS="-modcacherw"
+}
+
+_make_go_caches_writable() {
   if [[ -n "${GOMODCACHE:-}" && -d "${GOMODCACHE}" ]]; then
     chmod -R u+w "${GOMODCACHE}" 2>/dev/null || true
+  fi
+  if [[ -n "${GOCACHE:-}" && -d "${GOCACHE}" ]]; then
+    chmod -R u+w "${GOCACHE}" 2>/dev/null || true
   fi
 }
 
 prepare() {
   cd "${srcdir}/${pkgname}-${pkgver}"
-  export GOPATH="${srcdir}/gopath"
-  export GOMODCACHE="${GOPATH}/pkg/mod"
-  export GOFLAGS="-modcacherw"
-  trap _make_go_modcache_writable EXIT
+  _export_go_build_env
+  trap _make_go_caches_writable EXIT
   go mod download
-  _make_go_modcache_writable
+  _make_go_caches_writable
 }
 
 build() {
   cd "${srcdir}/${pkgname}-${pkgver}"
-  export GOPATH="${srcdir}/gopath"
-  export GOMODCACHE="${GOPATH}/pkg/mod"
-  export GOFLAGS="-modcacherw"
-  trap _make_go_modcache_writable EXIT
+  _export_go_build_env
+  trap _make_go_caches_writable EXIT
   go build -trimpath -mod=readonly -ldflags "-s -w" -o bootrecov ./cmd/bootrecov
-  _make_go_modcache_writable
+  _make_go_caches_writable
 }
 
 package() {
