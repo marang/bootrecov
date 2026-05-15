@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.4.5 - 2026-05-15
+
+### Changed
+
+- Activation now restores archived `/usr/lib/modules/<kernel-version>` trees automatically when the live module tree is missing.
+- Snapshot creation now stages backups and only publishes them after required boot artifacts and module archives are verified.
+- Rclone snapshot sync now uses metadata preservation when supported so local file modes are retained.
+
+### Fixed
+
+- Failed or unreadable `/boot` copies no longer leave partial snapshots visible as normal backups.
+- Reconcile now restores archived modules for active entries instead of removing entries only because the live module tree is missing.
+
 ## v0.4.2 - 2026-05-01
 
 ### Changed

@@ -29,15 +29,15 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - Print GRUB recovery commands for an activated snapshot.
 - Install a pacman pre-transaction hook to create snapshots before boot-critical package changes.
 - Archive the matching `/usr/lib/modules/<kernel-version>` tree as compressed SquashFS metadata inside the snapshot source.
-- Refuse activation when a snapshot clearly needs `/usr/lib/modules/<kernel-version>` but that module tree is missing on the root filesystem.
+- Restore archived `/usr/lib/modules/<kernel-version>` trees automatically during activation when the live tree is missing.
 - Validate snapshot names before path-sensitive operations.
 - Verify the EFI mount before activation or reconcile mutates EFI state, so it does not silently write into an unmounted `/boot/efi` directory.
 - Report detected platform, bootloader, paths, and support status with `bootrecov doctor`.
 
 ## What It Does Not Do
 
-- It does not automatically restore or overwrite `/usr/lib/modules`.
-- It does not mount the archived SquashFS module image during activation.
+- It does not overwrite an existing `/usr/lib/modules/<kernel-version>` tree.
+- It does not mount the archived SquashFS module image during boot.
 - It does not repair a broken root filesystem.
 - It does not detect failed boots automatically.
 - It does not prune old snapshots automatically yet.
@@ -45,7 +45,7 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - It detects `systemd-boot`, but does not manage systemd-boot entries yet.
 - It is not a replacement for a rescue USB or real system backups.
 
-The archived module SquashFS is there to make the backup complete and inspectable. Activation stays conservative: if you want to boot an older kernel, the matching `/usr/lib/modules/<version>` must already exist on the root filesystem.
+The archived module SquashFS makes the backup complete and restorable. Activation stays conservative: if the matching `/usr/lib/modules/<version>` tree already exists, Bootrecov leaves it alone; if it is missing and the snapshot has an archive, Bootrecov restores that exact tree before adding the bootloader entry.
 
 ## Storage Model
 
@@ -73,7 +73,7 @@ Runtime:
 - EFI system partition mounted at the expected location
 - `rclone`
 - `grub-mkconfig`
-- `mksquashfs` from `squashfs-tools`
+- `mksquashfs` and `unsquashfs` from `squashfs-tools`
 
 Build:
 
@@ -321,7 +321,7 @@ Activation performs these steps:
 
 1. Validate the snapshot name.
 2. Verify the snapshot has a kernel and initramfs.
-3. Verify matching root modules if the kernel version is known.
+3. Verify matching root modules if the kernel version is known, restoring them from the snapshot archive when the live tree is missing.
 4. Verify that the EFI root is actually mounted.
 5. Check available EFI space.
 6. Copy the snapshot into `/boot/efi/bootrecov-snapshots/<name>`.

@@ -29,8 +29,8 @@ Important behavior:
 - snapshots contain `/boot` state plus an optional compressed SquashFS image of the matching `/usr/lib/modules/<kernel-version>` tree
 - module archives live under `.bootrecov/root-modules/<kernel-version>.sqfs` inside the snapshot source
 - module archives are not copied into EFI mirrors
-- activation must not write to `/usr/lib/modules` automatically
-- older kernel fallback entries require the matching `/usr/lib/modules/<kernel-version>` tree to still exist on the root filesystem
+- activation restores an archived `/usr/lib/modules/<kernel-version>` tree automatically when the live root module tree is missing
+- activation must not overwrite an existing `/usr/lib/modules/<kernel-version>` tree
 - GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
 - GRUB config is regenerated with `grub-mkconfig -o /boot/grub/grub.cfg` after GRUB entry changes
 - runtime detection supports Arch and Ubuntu/Debian platforms
@@ -39,7 +39,7 @@ Important behavior:
 - systemd-boot is detected but not managed yet
 - Arch/pacman hooks are implemented; Ubuntu/Debian apt hooks are planned but not implemented
 - reconcile removes inactive EFI mirrors
-- reconcile removes entries for snapshots whose kernel version is known but whose matching root module tree is missing
+- reconcile removes entries for snapshots whose kernel version is known, whose matching root module tree is missing, and whose snapshot has no archived module tree to restore
 - reconcile preserves an already-bootable GRUB entry if refresh of its active EFI mirror fails transiently
 
 ## Implemented Features
@@ -49,7 +49,7 @@ Important behavior:
 - Backup discovery, metadata inspection, and completeness checks
 - Snapshot creation from `/boot`
 - Snapshot-side SquashFS archiving of matching root kernel modules when available
-- Root module tree compatibility checks for activated kernel snapshots
+- Root module tree compatibility checks and archived module restoration for activated kernel snapshots
 - EFI mirror activation and deactivation
 - GRUB entry add, remove, and parse
 - Platform and bootloader detection with environment overrides
@@ -120,7 +120,7 @@ Runtime assumptions:
 - EFI system layout
 - `rclone`
 - `grub-mkconfig`
-- `mksquashfs` from Arch package `squashfs-tools`
+- `mksquashfs` and `unsquashfs` from Arch package `squashfs-tools`
 
 The TUI performs a startup dependency check and exits early with a clear error if required runtime tools are missing.
 

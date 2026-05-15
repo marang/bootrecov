@@ -65,12 +65,15 @@ var (
 	RequireRclone         = true
 	MksquashfsBin         = "mksquashfs"
 	RequireMksquashfs     = true
+	UnsquashfsBin         = "unsquashfs"
+	RequireUnsquashfs     = true
 	RequireEFIMount       = true
 	BackupProfile         = "full" // full|minimal
 	grubHeader            = "#!/bin/bash\n"
 	statfsFunc            = syscall.Statfs
 	mountInfoPath         = "/proc/self/mountinfo"
 	createModuleImageFunc = createSquashFSModuleImage
+	restoreModuleTreeFunc = restoreSquashFSModuleTree
 )
 
 const (
@@ -91,22 +94,44 @@ func CreateBootBackupNow() (BootBackup, error) {
 	if err := checkSnapshotSpace(); err != nil {
 		return BootBackup{}, err
 	}
+	if err := validateBootSourceForSnapshot(); err != nil {
+		return BootBackup{}, err
+	}
 
 	stamp := time.Now().UTC().Format("20060102-150405")
 	snapshotTarget := filepath.Join(SnapshotDir, stamp)
+	stagingTarget := filepath.Join(SnapshotDir, ".tmp-"+stamp)
 
-	if err := os.MkdirAll(snapshotTarget, 0o755); err != nil {
-		return BootBackup{}, wrapFilesystemWriteError(snapshotTarget, err)
+	if dirExists(snapshotTarget) {
+		return BootBackup{}, fmt.Errorf("%w: snapshot already exists: %s", ErrSyncFailed, snapshotTarget)
 	}
+	_ = os.RemoveAll(stagingTarget)
+	if err := os.MkdirAll(stagingTarget, 0o755); err != nil {
+		return BootBackup{}, wrapFilesystemWriteError(stagingTarget, err)
+	}
+	cleanupStaging := true
+	defer func() {
+		if cleanupStaging {
+			_ = os.RemoveAll(stagingTarget)
+		}
+	}()
 
-	if err := copyBootSourceToSnapshot(snapshotTarget); err != nil {
+	if err := copyBootSourceToSnapshot(stagingTarget); err != nil {
 		return BootBackup{}, err
 	}
-	created := buildBackupFromName(stamp)
+	created := buildBackupFromPaths(stamp, stagingTarget, filepath.Join(EfiDir, stamp))
 	refreshBackupCompleteness(&created)
+	if !created.HasKernel || !created.HasInitramfs {
+		return BootBackup{}, fmt.Errorf("%w: copied snapshot %q is missing required boot artifacts", ErrBackupIncomplete, stamp)
+	}
 	if err := archiveRootModulesForSnapshot(&created); err != nil {
 		return BootBackup{}, err
 	}
+	if err := os.Rename(stagingTarget, snapshotTarget); err != nil {
+		return BootBackup{}, wrapFilesystemWriteError(snapshotTarget, err)
+	}
+	cleanupStaging = false
+	created = buildBackupFromName(stamp)
 	refreshBackupCompleteness(&created)
 	return created, nil
 }
@@ -193,6 +218,13 @@ func CheckRuntimeDependencies() error {
 			missing = append(missing, "mksquashfs (not configured)")
 		} else if _, err := exec.LookPath(MksquashfsBin); err != nil {
 			missing = append(missing, fmt.Sprintf("%s (required to archive kernel modules)", MksquashfsBin))
+		}
+	}
+	if RequireUnsquashfs {
+		if strings.TrimSpace(UnsquashfsBin) == "" {
+			missing = append(missing, "unsquashfs (not configured)")
+		} else if _, err := exec.LookPath(UnsquashfsBin); err != nil {
+			missing = append(missing, fmt.Sprintf("%s (required to restore archived kernel modules)", UnsquashfsBin))
 		}
 	}
 	if len(missing) == 0 {
@@ -285,6 +317,11 @@ func SyncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 		}
 		wasBootable := IsBootReady(*b)
 		if isActivated {
+			if err := ensureRootModulesAvailable(b); err != nil {
+				refreshBackupCompleteness(b)
+				b.InSync = false
+				continue
+			}
 			if err := ensureEFIMirrorFromSnapshot(b); err != nil {
 				if wasBootable {
 					preserveGrubForName[b.Name] = struct{}{}
@@ -366,6 +403,10 @@ func buildBackupFromName(name string) BootBackup {
 	name = strings.TrimSpace(name)
 	snapshotPath := filepath.Join(SnapshotDir, name)
 	efiPath := filepath.Join(EfiDir, name)
+	return buildBackupFromPaths(name, snapshotPath, efiPath)
+}
+
+func buildBackupFromPaths(name, snapshotPath, efiPath string) BootBackup {
 	hasSnapshot := dirExists(snapshotPath)
 	hasEFI := dirExists(efiPath)
 	return BootBackup{
@@ -377,6 +418,24 @@ func buildBackupFromName(name string) BootBackup {
 		HasEFI:       hasEFI,
 		InSync:       hasSnapshot,
 	}
+}
+
+func validateBootSourceForSnapshot() error {
+	kernel, initramfs := findKernelAndInitramfs(BootDir)
+	if kernel == "" || initramfs == "" {
+		return fmt.Errorf("%w: %s is missing a required kernel/initramfs pair", ErrBackupIncomplete, BootDir)
+	}
+	for _, name := range append(findMicrocodeImages(BootDir), kernel, initramfs) {
+		path := filepath.Join(BootDir, name)
+		f, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("%w: cannot read required boot artifact %s: %w", ErrBackupIncomplete, path, err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("%w: cannot read required boot artifact %s: %w", ErrBackupIncomplete, path, err)
+		}
+	}
+	return nil
 }
 
 func refreshBackupCompleteness(b *BootBackup) {
@@ -475,7 +534,7 @@ func validateRootModuleCompatibility(b BootBackup) error {
 	}
 	if b.HasArchivedModules {
 		return fmt.Errorf(
-			"%w: snapshot %q uses kernel %s and has archived modules at %s, but matching root module tree is missing: %s; activation does not write to the root filesystem",
+			"%w: snapshot %q uses kernel %s and has archived modules at %s, but matching root module tree is missing: %s; activate the snapshot to restore archived modules automatically",
 			ErrArchivedModulesUnsafe,
 			b.Name,
 			b.KernelVersion,
@@ -490,6 +549,23 @@ func validateRootModuleCompatibility(b BootBackup) error {
 		b.KernelVersion,
 		b.RootModuleTree,
 	)
+}
+
+func ensureRootModulesAvailable(b *BootBackup) error {
+	if !hasKnownMissingRootModules(*b) {
+		return nil
+	}
+	if !b.HasArchivedModules {
+		return validateRootModuleCompatibility(*b)
+	}
+	if err := restoreModuleTreeFunc(b.ArchivedModuleTree, b.RootModuleTree); err != nil {
+		return fmt.Errorf("%w: restore modules for kernel %s from %s to %s: %w", ErrRootModuleRestoreFailed, b.KernelVersion, b.ArchivedModuleTree, b.RootModuleTree, err)
+	}
+	b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(b.KernelVersion)
+	if !b.HasRootModules {
+		return fmt.Errorf("%w: restored module tree is missing after restore: %s", ErrRootModuleRestoreFailed, b.RootModuleTree)
+	}
+	return nil
 }
 
 func archiveRootModulesForSnapshot(b *BootBackup) error {
@@ -533,6 +609,54 @@ func createSquashFSModuleImage(src, dst string) error {
 		commandErr := fmt.Errorf("%w: mksquashfs: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
 		return wrapExternalWriteFailure(dst, commandErr)
 	}
+	return nil
+}
+
+func restoreSquashFSModuleTree(archivePath, moduleTreePath string) error {
+	if strings.TrimSpace(UnsquashfsBin) == "" {
+		return fmt.Errorf("%w: unsquashfs is required but not configured", ErrRequiredToolUnavailable)
+	}
+	if _, err := exec.LookPath(UnsquashfsBin); err != nil {
+		return fmt.Errorf("%w: unsquashfs is required for module restore but was not found in PATH", ErrRequiredToolUnavailable)
+	}
+	if !fileExists(archivePath) {
+		return fmt.Errorf("%w: module archive does not exist: %s", ErrSourceDirectoryMissing, archivePath)
+	}
+	moduleTreePath = filepath.Clean(moduleTreePath)
+	rootModulesDir := filepath.Clean(RootModulesDir)
+	if filepath.Dir(moduleTreePath) != rootModulesDir {
+		return fmt.Errorf("%w: refusing to restore module tree outside %s: %s", ErrRootModuleRestoreFailed, rootModulesDir, moduleTreePath)
+	}
+	if dirExists(moduleTreePath) {
+		return nil
+	}
+	if err := os.MkdirAll(rootModulesDir, 0o755); err != nil {
+		return wrapFilesystemWriteError(rootModulesDir, err)
+	}
+	staging, err := os.MkdirTemp(rootModulesDir, ".bootrecov-restore-*")
+	if err != nil {
+		return wrapFilesystemWriteError(rootModulesDir, err)
+	}
+	cleanupStaging := true
+	defer func() {
+		if cleanupStaging {
+			_ = os.RemoveAll(staging)
+		}
+	}()
+
+	cmd := exec.Command(UnsquashfsBin, "-d", staging, archivePath)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		commandErr := fmt.Errorf("%w: unsquashfs: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
+		return wrapExternalWriteFailure(moduleTreePath, commandErr)
+	}
+	if dirExists(moduleTreePath) {
+		return nil
+	}
+	if err := os.Rename(staging, moduleTreePath); err != nil {
+		return wrapFilesystemWriteError(moduleTreePath, err)
+	}
+	cleanupStaging = false
 	return nil
 }
 
@@ -1093,9 +1217,6 @@ func ActivateBackup(name string) error {
 	if !canonical.HasKernel || !canonical.HasInitramfs {
 		return fmt.Errorf("%w: snapshot %q is incomplete", ErrBackupIncomplete, name)
 	}
-	if err := validateRootModuleCompatibility(canonical); err != nil {
-		return err
-	}
 	if err := ensureEFIMountAvailable(); err != nil {
 		return err
 	}
@@ -1103,6 +1224,11 @@ func ActivateBackup(name string) error {
 		if err := checkEFISpaceForSnapshot(canonical.SnapshotPath); err != nil {
 			return err
 		}
+	}
+	if err := ensureRootModulesAvailable(&canonical); err != nil {
+		return err
+	}
+	if !canonical.HasEFI {
 		if err := ensureEFIMirrorFromSnapshot(&canonical); err != nil {
 			return err
 		}
@@ -1182,7 +1308,7 @@ func runRcloneSync(src, dst string, excludes, includes []string) error {
 
 func buildRcloneSyncArgs(srcArg, dstArg string, excludes, includes []string, supported map[string]bool) []string {
 	args := []string{"sync", srcArg, dstArg}
-	for _, flag := range []string{"--links", "--times", "--delete-during", "--perms"} {
+	for _, flag := range []string{"--links", "--metadata", "--times", "--delete-during", "--perms"} {
 		if supported[flag] {
 			args = append(args, flag)
 		}
@@ -1203,6 +1329,7 @@ func detectSupportedRcloneSyncFlags() map[string]bool {
 	// Conservative defaults: keep sync portable across older rclone builds.
 	supported := map[string]bool{
 		"--links":         false,
+		"--metadata":      false,
 		"--times":         false,
 		"--delete-during": false,
 		"--perms":         false,

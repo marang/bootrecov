@@ -65,10 +65,10 @@ func AddGrubEntry(b BootBackup) error {
 	if !canonical.HasKernel || !canonical.HasInitramfs {
 		return fmt.Errorf("%w: backup %q is incomplete", ErrBackupIncomplete, canonical.Path)
 	}
-	if err := validateRootModuleCompatibility(canonical); err != nil {
+	if err := ensureEFIMountAvailable(); err != nil {
 		return err
 	}
-	if err := ensureEFIMountAvailable(); err != nil {
+	if err := ensureRootModulesAvailable(&canonical); err != nil {
 		return err
 	}
 
