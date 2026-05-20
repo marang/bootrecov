@@ -79,6 +79,7 @@ The test assertions include:
 - GRUB custom script dump before and after backup entry generation
 - real `bootrecov backup create` generation of a compressed root module SquashFS image
 - activation of the real snapshot while verifying `.bootrecov` metadata is excluded from the EFI mirror
-- previous-kernel missing-module activation refusal when an archived `.sqfs` exists but `/usr/lib/modules/<version>` is absent
+- active fallback module restoration through the package-manager post-transaction hook path
+- previous-kernel activation with archived module restoration when `/usr/lib/modules/<version>` is absent
 - one-shot reboot into generated backup GRUB entry, verified by `/proc/cmdline` marker
 - corruption of primary kernel, then a second successful backup-entry reboot

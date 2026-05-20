@@ -481,7 +481,8 @@ The VM test currently verifies:
 - snapshot creation
 - SquashFS module archive creation
 - EFI mirror creation without leaking `.bootrecov` metadata
-- old-kernel snapshot activation refusal when `/usr/lib/modules/<version>` is missing
+- active fallback module restoration through the package-manager post-transaction hook path
+- old-kernel snapshot activation with archived module restoration when `/usr/lib/modules/<version>` is missing
 - bootloader entry generation through the GRUB backend
 - booting the Bootrecov GRUB entry
 - booting the backup entry after corrupting the primary kernel

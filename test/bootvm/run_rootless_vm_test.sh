@@ -686,6 +686,38 @@ if [[ -e "${REAL_EFI_DIR}/.bootrecov" ]]; then
   exit 1
 fi
 echo "[guest] EFI mirror excludes .bootrecov metadata"
+
+echo "[guest] checking post-transaction hook restores active fallback modules removed by package update"
+sudo rm -rf "/usr/lib/modules/${KERNEL_VERSION}"
+LIST_AFTER_MODULE_REMOVE="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list)"
+printf '%s\n' "${LIST_AFTER_MODULE_REMOVE}" | sed 's/^/[backup-list-after-module-remove] /'
+BOOTABLE_AFTER_MODULE_REMOVE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $5}' <<<"${LIST_AFTER_MODULE_REMOVE}")"
+RESTORABLE_AFTER_MODULE_REMOVE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $6}' <<<"${LIST_AFTER_MODULE_REMOVE}")"
+ROOT_MODULES_AFTER_MODULE_REMOVE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $7}' <<<"${LIST_AFTER_MODULE_REMOVE}")"
+if [[ "${BOOTABLE_AFTER_MODULE_REMOVE}" != "no" || "${RESTORABLE_AFTER_MODULE_REMOVE}" != "yes" || "${ROOT_MODULES_AFTER_MODULE_REMOVE}" != "archived" ]]; then
+  echo "[guest] expected active snapshot to become restorable but not bootable after module removal" >&2
+  exit 1
+fi
+sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov hook reconcile-active >/tmp/bootrecov-hook-reconcile-active.log 2>&1 || {
+  echo "[guest] bootrecov hook reconcile-active failed"
+  sudo cat /tmp/bootrecov-hook-reconcile-active.log || true
+  exit 1
+}
+sudo cat /tmp/bootrecov-hook-reconcile-active.log || true
+if [[ ! -f "/usr/lib/modules/${KERNEL_VERSION}/modules.dep" ]]; then
+  echo "[guest] post-transaction hook did not restore /usr/lib/modules/${KERNEL_VERSION}" >&2
+  exit 1
+fi
+LIST_AFTER_HOOK_RESTORE="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list)"
+printf '%s\n' "${LIST_AFTER_HOOK_RESTORE}" | sed 's/^/[backup-list-after-hook-restore] /'
+BOOTABLE_AFTER_HOOK_RESTORE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $5}' <<<"${LIST_AFTER_HOOK_RESTORE}")"
+ROOT_MODULES_AFTER_HOOK_RESTORE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $7}' <<<"${LIST_AFTER_HOOK_RESTORE}")"
+if [[ "${BOOTABLE_AFTER_HOOK_RESTORE}" != "yes" || "${ROOT_MODULES_AFTER_HOOK_RESTORE}" != "yes" ]]; then
+  echo "[guest] expected active snapshot to be bootable again after hook reconcile-active" >&2
+  exit 1
+fi
+echo "[guest] post-transaction hook restored active fallback modules"
+
 sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${SNAP_NAME}" >/tmp/bootrecov-deactivate.log 2>&1 || {
   echo "[guest] bootrecov backup deactivate failed"
   sudo cat /tmp/bootrecov-deactivate.log || true
@@ -693,29 +725,38 @@ sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${SNAP_NAME}"
 }
 df -h /boot/efi | sed 's/^/[guest-efi-free-after-deactivate] /'
 
-echo "[guest] checking archived previous-kernel module image does not permit unsafe activation"
+echo "[guest] checking archived previous-kernel module image restores during activation"
 PREV_VERSION="6.0.0-bootrecov-e2e"
-PREV_SNAPSHOT="2026-prev-kernel-missing-modules"
+PREV_SNAPSHOT="2026-prev-kernel-archived-modules"
 PREV_SNAPSHOT_DIR="/var/backups/bootrecov-snapshots/${PREV_SNAPSHOT}"
-sudo rm -rf "${PREV_SNAPSHOT_DIR}" "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" "/usr/lib/modules/${PREV_VERSION}"
+PREV_MODULE_SRC="/tmp/bootrecov-prev-modules"
+sudo rm -rf "${PREV_SNAPSHOT_DIR}" "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" "/usr/lib/modules/${PREV_VERSION}" "${PREV_MODULE_SRC}"
 sudo mkdir -p "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules"
 sudo cp -f "${KERNEL_SRC}" "${PREV_SNAPSHOT_DIR}/vmlinuz-${PREV_VERSION}"
 sudo cp -f "${INITRD_SRC}" "${PREV_SNAPSHOT_DIR}/initrd.img-${PREV_VERSION}"
-sudo cp -f "${MODULE_IMAGE}" "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules/${PREV_VERSION}.sqfs"
-if sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
-  echo "[guest] activation unexpectedly succeeded for missing previous-kernel module tree" >&2
+sudo mkdir -p "${PREV_MODULE_SRC}"
+printf 'bootrecov previous module metadata\n' | sudo tee "${PREV_MODULE_SRC}/modules.dep" >/dev/null
+sudo mksquashfs "${PREV_MODULE_SRC}" "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules/${PREV_VERSION}.sqfs" -comp zstd -Xcompression-level 15 -noappend >/tmp/bootrecov-prev-mksquashfs.log 2>&1
+if ! sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
+  echo "[guest] activation failed for archived previous-kernel module tree" >&2
   sudo cat /tmp/bootrecov-prev-activate.log || true
   exit 1
 fi
-if [[ -e "/usr/lib/modules/${PREV_VERSION}" ]]; then
-  echo "[guest] previous-kernel activation created /usr/lib/modules/${PREV_VERSION}, which is forbidden" >&2
+if [[ ! -f "/usr/lib/modules/${PREV_VERSION}/modules.dep" ]]; then
+  echo "[guest] previous-kernel activation did not restore /usr/lib/modules/${PREV_VERSION}" >&2
   exit 1
 fi
-if [[ -e "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" ]]; then
-  echo "[guest] previous-kernel activation created an EFI mirror despite missing root modules" >&2
+if [[ ! -d "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" ]]; then
+  echo "[guest] previous-kernel activation did not create an EFI mirror" >&2
   exit 1
 fi
-echo "[guest] previous-kernel missing-module safety check passed"
+sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-deactivate.log 2>&1 || {
+  echo "[guest] previous-kernel deactivate failed"
+  sudo cat /tmp/bootrecov-prev-deactivate.log || true
+  exit 1
+}
+sudo rm -rf "/usr/lib/modules/${PREV_VERSION}" "${PREV_MODULE_SRC}"
+echo "[guest] previous-kernel archived-module restore check passed"
 
 echo "[guest] preparing deterministic GRUB smoke snapshot"
 sudo mkdir -p "${BACKUP_DIR}"
