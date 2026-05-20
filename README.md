@@ -134,6 +134,8 @@ BOOTRECOV_MKINITCPIO_RUNTIME_HOOK=/usr/lib/initcpio/hooks/bootrecov
 BOOTRECOV_MKINITCPIO_BIN=mkinitcpio
 ```
 
+For Arch/mkinitcpio, Bootrecov detects the `mkinitcpio` binary from `PATH`, the mkinitcpio config when it exists, and the first existing initcpio install/runtime hook directories. The paths above are defaults and override examples, not universal Linux paths. Unknown initramfs backends fail with an explicit unsupported-backend error instead of receiving Arch-specific files.
+
 The detailed expansion roadmap for future distributions and bootloaders lives in [`docs/roadmap/`](docs/roadmap/README.md).
 
 ## Install And Build

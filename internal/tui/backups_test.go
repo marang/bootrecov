@@ -30,8 +30,8 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
-	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
+	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
 	GrubCfgOutput = filepath.Join(filepath.Dir(grub), "grub.cfg")
 	GrubMkconfig = ""
@@ -55,6 +55,12 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	restoreModuleTreeFunc = fakeRestoreModuleTree
 	statfsFunc = syscall.Statfs
 	kernelCmdlinePath = filepath.Join(filepath.Dir(grub), "cmdline")
+	execLookPath = func(file string) (string, error) {
+		if file == "mkinitcpio" {
+			return filepath.Join(filepath.Dir(grub), "bin", "mkinitcpio"), nil
+		}
+		return exec.LookPath(file)
+	}
 	OSReleasePath = filepath.Join(filepath.Dir(grub), "os-release")
 	GrubDefaultPath = filepath.Join(filepath.Dir(grub), "default-grub")
 	PlatformOverride = ""
@@ -67,8 +73,8 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	activeWarnings = nil
 	writeFileWithContent(t, MkinitcpioConfPath, "HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)\n")
 	t.Cleanup(func() {
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
-			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
+			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
 	})
 }
 
@@ -177,6 +183,46 @@ func TestApplyEnvironmentOverridesFromEnv(t *testing.T) {
 	}
 	if BackupProfile != "minimal" {
 		t.Fatalf("backup profile=%q", BackupProfile)
+	}
+}
+
+func TestConfigureDetectedEnvironmentDetectsMkinitcpioLayout(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	base := filepath.Dir(grub)
+	detectedConf := filepath.Join(base, "detected", "mkinitcpio.conf")
+	detectedInstall := filepath.Join(base, "detected", "install")
+	detectedHooks := filepath.Join(base, "detected", "hooks")
+	writeFileWithContent(t, detectedConf, "HOOKS=(base filesystems)\n")
+	if err := os.MkdirAll(detectedInstall, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(detectedHooks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	MkinitcpioConfPath = detectedConf
+	MkinitcpioInstallPath = filepath.Join(detectedInstall, "placeholder")
+	MkinitcpioHookPath = filepath.Join(detectedHooks, "placeholder")
+	MkinitcpioBin = "mkinitcpio"
+	execLookPath = func(file string) (string, error) {
+		if file == "mkinitcpio" {
+			return filepath.Join(base, "bin", "mkinitcpio"), nil
+		}
+		return exec.LookPath(file)
+	}
+
+	info := ConfigureDetectedEnvironment()
+	if info.Layout.MkinitcpioConfig != detectedConf {
+		t.Fatalf("expected detected mkinitcpio config, got %#v", info.Layout)
+	}
+	if info.Layout.MkinitcpioInstallHook != filepath.Join(detectedInstall, "bootrecov") {
+		t.Fatalf("expected detected install hook dir, got %#v", info.Layout)
+	}
+	if info.Layout.MkinitcpioRuntimeHook != filepath.Join(detectedHooks, "bootrecov") {
+		t.Fatalf("expected detected runtime hook dir, got %#v", info.Layout)
+	}
+	if MkinitcpioBin != filepath.Join(base, "bin", "mkinitcpio") {
+		t.Fatalf("expected mkinitcpio binary detection, got %q", MkinitcpioBin)
 	}
 }
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -64,6 +65,7 @@ var (
 	activeBootloaderID   = BootloaderGRUB
 	activeBootloaderName = "GRUB"
 	activeWarnings       []string
+	execLookPath         = exec.LookPath
 )
 
 func ApplyEnvironmentOverridesFromEnv() {
@@ -110,6 +112,7 @@ func ApplyEnvironmentOverridesFromEnv() {
 
 func ConfigureDetectedEnvironment() RuntimeEnvironment {
 	applyDetectedLayoutDefaults()
+	applyDetectedInitramfsDefaults()
 	activeWarnings = nil
 
 	platformID, platformName := detectPlatform()
@@ -287,6 +290,58 @@ func applyDetectedLayoutDefaults() {
 			GrubCfgOutput = detected
 		}
 	}
+}
+
+func applyDetectedInitramfsDefaults() {
+	if !envConfigured("BOOTRECOV_MKINITCPIO_BIN") && strings.TrimSpace(MkinitcpioBin) == "mkinitcpio" {
+		if detected, err := execLookPath("mkinitcpio"); err == nil && detected != "" {
+			MkinitcpioBin = detected
+		}
+	}
+	if !envConfigured("BOOTRECOV_MKINITCPIO_CONF") {
+		if detected := detectFirstExistingFile([]string{
+			MkinitcpioConfPath,
+			"/etc/mkinitcpio.conf",
+		}); detected != "" {
+			MkinitcpioConfPath = detected
+		}
+	}
+	if !envConfigured("BOOTRECOV_MKINITCPIO_INSTALL_HOOK") {
+		if detected := detectFirstExistingDir([]string{
+			filepath.Dir(MkinitcpioInstallPath),
+			"/usr/lib/initcpio/install",
+			"/lib/initcpio/install",
+		}); detected != "" {
+			MkinitcpioInstallPath = filepath.Join(detected, "bootrecov")
+		}
+	}
+	if !envConfigured("BOOTRECOV_MKINITCPIO_RUNTIME_HOOK") {
+		if detected := detectFirstExistingDir([]string{
+			filepath.Dir(MkinitcpioHookPath),
+			"/usr/lib/initcpio/hooks",
+			"/lib/initcpio/hooks",
+		}); detected != "" {
+			MkinitcpioHookPath = filepath.Join(detected, "bootrecov")
+		}
+	}
+}
+
+func detectFirstExistingFile(candidates []string) string {
+	for _, candidate := range uniqueCleanPaths(candidates) {
+		if fileExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
+}
+
+func detectFirstExistingDir(candidates []string) string {
+	for _, candidate := range uniqueCleanPaths(candidates) {
+		if dirExists(candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func detectBootDir() string {
