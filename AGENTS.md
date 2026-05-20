@@ -151,6 +151,7 @@ Environment overrides:
 
 Path detection should handle common `/boot/efi`, `/efi`, and ESP-at-`/boot` layouts conservatively. Explicit environment overrides always take precedence.
 Arch/mkinitcpio hook path detection should use the `mkinitcpio` binary from `PATH`, existing mkinitcpio config, and existing initcpio hook directories before falling back to defaults. Do not apply Arch/mkinitcpio paths to other initramfs backends.
+If multiple bootloader signals are detected, report ambiguity and require/accept `BOOTRECOV_BOOTLOADER` to choose the intended backend instead of guessing.
 
 ## Backup Profiles
 

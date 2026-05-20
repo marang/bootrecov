@@ -268,6 +268,29 @@ func TestConfigureDetectedEnvironmentRejectsAmbiguousBootloaderSignals(t *testin
 	if info.BootloaderID != BootloaderUnknown || info.BootloaderSupported {
 		t.Fatalf("expected ambiguous bootloader to be unsupported unknown, got %#v", info)
 	}
+	if !strings.Contains(strings.Join(info.Warnings, "\n"), "BOOTRECOV_BOOTLOADER=grub") {
+		t.Fatalf("expected warning to explain explicit bootloader selection, got %#v", info.Warnings)
+	}
+}
+
+func TestConfigureDetectedEnvironmentOverrideSelectsGrubWhenSignalsAreAmbiguous(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, GrubCfgOutput)
+	BootloaderOverride = BootloaderGRUB
+
+	info := ConfigureDetectedEnvironment()
+	if info.BootloaderID != BootloaderGRUB || !info.BootloaderSupported {
+		t.Fatalf("expected explicit grub override to select supported bootloader, got %#v", info)
+	}
+	for _, warning := range info.Warnings {
+		if strings.Contains(warning, "multiple bootloader signals") {
+			t.Fatalf("override should suppress ambiguity warning, got %#v", info.Warnings)
+		}
+	}
 }
 
 func TestDetectBootDirFromMountInfoArtifacts(t *testing.T) {

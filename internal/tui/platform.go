@@ -116,7 +116,7 @@ func ConfigureDetectedEnvironment() RuntimeEnvironment {
 	activeWarnings = nil
 
 	platformID, platformName := detectPlatform()
-	bootloaderID, bootloaderName := detectBootloader()
+	bootloaderID, bootloaderName, bootloaderWarnings := detectBootloader()
 
 	activePlatformID = platformID
 	activePlatformName = platformName
@@ -128,6 +128,7 @@ func ConfigureDetectedEnvironment() RuntimeEnvironment {
 	applyBootloaderDefaults(bootloaderID)
 
 	info := CurrentRuntimeEnvironment()
+	info.Warnings = append(info.Warnings, bootloaderWarnings...)
 	if !info.BootloaderSupported {
 		info.Warnings = append(info.Warnings, fmt.Sprintf("bootloader %q is detected but not supported yet", info.BootloaderID))
 	}
@@ -239,26 +240,31 @@ func detectPlatformFromOSRelease(values map[string]string) (string, string) {
 	return id, valueOr(values["PRETTY_NAME"], id)
 }
 
-func detectBootloader() (string, string) {
+func detectBootloader() (string, string, []string) {
 	if BootloaderOverride != "" {
-		return bootloaderNameForID(BootloaderOverride)
+		id, name := bootloaderNameForID(BootloaderOverride)
+		return id, name, nil
 	}
 	hasSystemdBoot := systemdBootSignal()
 	hasStrongGRUB := strongGRUBSignal()
 	hasWeakGRUB := weakGRUBSignal()
 	if hasSystemdBoot && hasStrongGRUB {
-		return BootloaderUnknown, "Ambiguous bootloader"
+		return BootloaderUnknown, "Ambiguous bootloader", []string{
+			"multiple bootloader signals detected (GRUB and systemd-boot); choose one with BOOTRECOV_BOOTLOADER=grub or BOOTRECOV_BOOTLOADER=systemd-boot",
+		}
 	}
 	if hasSystemdBoot {
-		return BootloaderSystemdBoot, "systemd-boot"
+		return BootloaderSystemdBoot, "systemd-boot", nil
 	}
 	if hasStrongGRUB || hasWeakGRUB {
-		return BootloaderGRUB, "GRUB"
+		return BootloaderGRUB, "GRUB", nil
 	}
 	if _, err := os.Stat("/sys/firmware/efi"); err == nil {
-		return BootloaderUnknown, "Unknown EFI bootloader"
+		return BootloaderUnknown, "Unknown EFI bootloader", []string{
+			"EFI system detected but no supported bootloader signal found; choose one with BOOTRECOV_BOOTLOADER when appropriate",
+		}
 	}
-	return BootloaderGRUB, "GRUB"
+	return BootloaderGRUB, "GRUB", nil
 }
 
 func strongGRUBSignal() bool {
