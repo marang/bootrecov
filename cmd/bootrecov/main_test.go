@@ -42,6 +42,42 @@ func TestHookBackupNowReturnsNonSpaceErrors(t *testing.T) {
 	}
 }
 
+func TestHookReconcileActiveRunsSync(t *testing.T) {
+	called := false
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		called = true
+		return []tui.BootBackup{{Name: "active"}}, []tui.GrubEntry{{Name: "active"}}, nil
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"hook", "reconcile-active"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("hook reconcile-active failed: %v", err)
+	}
+	if !called {
+		t.Fatal("expected hook reconcile-active to run active fallback sync")
+	}
+}
+
+func TestHookReconcileActiveWarnsButDoesNotFailTransaction(t *testing.T) {
+	expected := errors.New("efi mount unavailable")
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return nil, nil, expected
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+
+	cmd := newRootCmd()
+	cmd.SetArgs([]string{"hook", "reconcile-active"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("post-transaction hook should warn without failing pacman, got %v", err)
+	}
+}
+
 func TestHookUninstallRemovesHook(t *testing.T) {
 	oldHookPath := tui.PacmanHookPath
 	oldPostHookPath := tui.PacmanPostHookPath

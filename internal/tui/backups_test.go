@@ -529,6 +529,39 @@ func TestSyncBackupsAndGrubRestoresArchivedModulesForActiveEntry(t *testing.T) {
 	}
 }
 
+func TestSyncBackupsAndGrubRestoresModulesRemovedAfterActivation(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	makeVersionedBootableBackup(t, snap, "active", version)
+	writeFile(t, archivedModuleImagePath(filepath.Join(snap, "active"), version))
+	writeFile(t, filepath.Join(RootModulesDir, version, "modules.dep"))
+
+	if err := ActivateBackup("active"); err != nil {
+		t.Fatalf("ActivateBackup failed: %v", err)
+	}
+	if !dirExists(filepath.Join(RootModulesDir, version)) {
+		t.Fatalf("expected activated fallback to start boot-ready")
+	}
+
+	if err := os.RemoveAll(filepath.Join(RootModulesDir, version)); err != nil {
+		t.Fatal(err)
+	}
+	backups, entries, err := SyncBackupsAndGrub()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(RootModulesDir, version, "modules.dep")); statErr != nil {
+		t.Fatalf("post-update reconcile should restore modules removed after activation, err=%v", statErr)
+	}
+	if len(backups) != 1 || !IsBootReady(backups[0]) {
+		t.Fatalf("expected active fallback to be boot-ready again after reconcile: %#v", backups)
+	}
+	if len(entries) != 1 || entries[0].Name != "active" {
+		t.Fatalf("expected active grub entry to remain, got %#v", entries)
+	}
+}
+
 func TestSyncBackupsAndGrubRequiresEFIMountBeforeMutation(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)

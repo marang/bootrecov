@@ -27,6 +27,7 @@ var (
 	errRiskAcknowledgementRejected = errors.New("risk acknowledgement rejected")
 	riskAccepted                   bool
 	createBootBackupNow            = tui.CreateBootBackupNow
+	syncBackupsAndGrub             = tui.SyncBackupsAndGrub
 	riskPromptStyle                = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("214")).Padding(0, 1)
 	riskTitleStyle                 = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 	riskMutedStyle                 = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
@@ -88,7 +89,7 @@ func newReconcileCmd() *cobra.Command {
 		Use:   "reconcile",
 		Short: "Reconcile EFI mirrors and bootloader recovery entries",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			backups, entries, err := tui.SyncBackupsAndGrub()
+			backups, entries, err := syncBackupsAndGrub()
 			if err != nil {
 				return err
 			}
@@ -187,7 +188,7 @@ func newHookCmd() *cobra.Command {
 		Hidden: true,
 		Short:  "Refresh active recovery entries from a package-manager hook",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			backups, entries, err := tui.SyncBackupsAndGrub()
+			backups, entries, err := syncBackupsAndGrub()
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "bootrecov warning: active fallback reconcile failed after package transaction: %v\n", err)
 				return nil
