@@ -81,17 +81,44 @@ func TestHookReconcileActiveWarnsButDoesNotFailTransaction(t *testing.T) {
 func TestHookUninstallRemovesHook(t *testing.T) {
 	oldHookPath := tui.PacmanHookPath
 	oldPostHookPath := tui.PacmanPostHookPath
+	oldMkinitcpioInstall := tui.MkinitcpioInstallPath
+	oldMkinitcpioHook := tui.MkinitcpioHookPath
+	oldMkinitcpioConf := tui.MkinitcpioConfPath
+	oldUpdateInitramfs := tui.UpdateInitramfs
 	hookDir := t.TempDir()
 	tui.PacmanHookPath = filepath.Join(hookDir, "bootrecov.hook")
 	tui.PacmanPostHookPath = filepath.Join(hookDir, "bootrecov-post.hook")
+	tui.MkinitcpioInstallPath = filepath.Join(hookDir, "initcpio", "install", "bootrecov")
+	tui.MkinitcpioHookPath = filepath.Join(hookDir, "initcpio", "hooks", "bootrecov")
+	tui.MkinitcpioConfPath = filepath.Join(hookDir, "mkinitcpio.conf")
+	tui.UpdateInitramfs = false
 	t.Cleanup(func() {
 		tui.PacmanHookPath = oldHookPath
 		tui.PacmanPostHookPath = oldPostHookPath
+		tui.MkinitcpioInstallPath = oldMkinitcpioInstall
+		tui.MkinitcpioHookPath = oldMkinitcpioHook
+		tui.MkinitcpioConfPath = oldMkinitcpioConf
+		tui.UpdateInitramfs = oldUpdateInitramfs
 	})
 	if err := os.WriteFile(tui.PacmanHookPath, []byte("hook"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(tui.PacmanPostHookPath, []byte("hook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tui.MkinitcpioInstallPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(tui.MkinitcpioHookPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tui.MkinitcpioInstallPath, []byte("hook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tui.MkinitcpioHookPath, []byte("hook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tui.MkinitcpioConfPath, []byte("HOOKS=(base filesystems bootrecov fsck)\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(riskAcceptEnv, "1")
@@ -106,6 +133,12 @@ func TestHookUninstallRemovesHook(t *testing.T) {
 	}
 	if _, err := os.Stat(tui.PacmanPostHookPath); !os.IsNotExist(err) {
 		t.Fatalf("expected post hook to be removed, err=%v", err)
+	}
+	if _, err := os.Stat(tui.MkinitcpioInstallPath); !os.IsNotExist(err) {
+		t.Fatalf("expected mkinitcpio install hook to be removed, err=%v", err)
+	}
+	if _, err := os.Stat(tui.MkinitcpioHookPath); !os.IsNotExist(err) {
+		t.Fatalf("expected mkinitcpio runtime hook to be removed, err=%v", err)
 	}
 }
 

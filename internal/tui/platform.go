@@ -27,15 +27,18 @@ const (
 )
 
 type SystemLayout struct {
-	BootDir            string
-	ESPRoot            string
-	EFIMirrorDir       string
-	SnapshotDir        string
-	RootModulesDir     string
-	GrubCustom         string
-	GrubCfgOutput      string
-	PacmanHookPath     string
-	PacmanPostHookPath string
+	BootDir               string
+	ESPRoot               string
+	EFIMirrorDir          string
+	SnapshotDir           string
+	RootModulesDir        string
+	GrubCustom            string
+	GrubCfgOutput         string
+	PacmanHookPath        string
+	PacmanPostHookPath    string
+	MkinitcpioInstallHook string
+	MkinitcpioRuntimeHook string
+	MkinitcpioConfig      string
 }
 
 type RuntimeEnvironment struct {
@@ -82,6 +85,27 @@ func ApplyEnvironmentOverridesFromEnv() {
 	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_EFI_MIRROR_DIR")); v != "" {
 		EfiDir = filepath.Clean(v)
 	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_ROOT_MODULES_DIR")); v != "" {
+		RootModulesDir = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_PACMAN_HOOK_PATH")); v != "" {
+		PacmanHookPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_PACMAN_POST_HOOK_PATH")); v != "" {
+		PacmanPostHookPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_MKINITCPIO_CONF")); v != "" {
+		MkinitcpioConfPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_MKINITCPIO_INSTALL_HOOK")); v != "" {
+		MkinitcpioInstallPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_MKINITCPIO_RUNTIME_HOOK")); v != "" {
+		MkinitcpioHookPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_MKINITCPIO_BIN")); v != "" {
+		MkinitcpioBin = v
+	}
 }
 
 func ConfigureDetectedEnvironment() RuntimeEnvironment {
@@ -127,15 +151,18 @@ func CurrentRuntimeEnvironment() RuntimeEnvironment {
 
 func currentSystemLayout() SystemLayout {
 	return SystemLayout{
-		BootDir:            BootDir,
-		ESPRoot:            filepath.Dir(EfiDir),
-		EFIMirrorDir:       EfiDir,
-		SnapshotDir:        SnapshotDir,
-		RootModulesDir:     RootModulesDir,
-		GrubCustom:         GrubCustom,
-		GrubCfgOutput:      GrubCfgOutput,
-		PacmanHookPath:     PacmanHookPath,
-		PacmanPostHookPath: PacmanPostHookPath,
+		BootDir:               BootDir,
+		ESPRoot:               filepath.Dir(EfiDir),
+		EFIMirrorDir:          EfiDir,
+		SnapshotDir:           SnapshotDir,
+		RootModulesDir:        RootModulesDir,
+		GrubCustom:            GrubCustom,
+		GrubCfgOutput:         GrubCfgOutput,
+		PacmanHookPath:        PacmanHookPath,
+		PacmanPostHookPath:    PacmanPostHookPath,
+		MkinitcpioInstallHook: MkinitcpioInstallPath,
+		MkinitcpioRuntimeHook: MkinitcpioHookPath,
+		MkinitcpioConfig:      MkinitcpioConfPath,
 	}
 }
 
@@ -168,6 +195,16 @@ func ensurePlatformHookSupported() error {
 		return fmt.Errorf("%w: package-manager hook install is not implemented for %s yet; apt/dpkg hook support is planned", ErrUnsupportedPackageHook, currentPlatformID())
 	}
 	return fmt.Errorf("%w: package-manager hook install is not supported for platform %q", ErrUnsupportedPackageHook, currentPlatformID())
+}
+
+func ensureInitramfsHookSupported() error {
+	if currentPlatformID() != PlatformArch {
+		return fmt.Errorf("%w: boot-time module restore is not implemented for platform %q yet", ErrUnsupportedInitramfsHook, currentPlatformID())
+	}
+	if !fileExists(MkinitcpioConfPath) {
+		return fmt.Errorf("%w: mkinitcpio config not found at %s; dracut/initramfs-tools support is not implemented yet", ErrUnsupportedInitramfsHook, MkinitcpioConfPath)
+	}
+	return nil
 }
 
 func detectPlatform() (string, string) {

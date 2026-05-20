@@ -62,6 +62,11 @@ var (
 	RootModulesDir        = "/usr/lib/modules"
 	PacmanHookPath        = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
 	PacmanPostHookPath    = "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook"
+	MkinitcpioInstallPath = "/usr/lib/initcpio/install/bootrecov"
+	MkinitcpioHookPath    = "/usr/lib/initcpio/hooks/bootrecov"
+	MkinitcpioConfPath    = "/etc/mkinitcpio.conf"
+	MkinitcpioBin         = "mkinitcpio"
+	UpdateInitramfs       = true
 	RcloneBin             = "rclone"
 	RequireRclone         = true
 	MksquashfsBin         = "mksquashfs"
@@ -73,6 +78,7 @@ var (
 	grubHeader            = "#!/bin/bash\n"
 	statfsFunc            = syscall.Statfs
 	mountInfoPath         = "/proc/self/mountinfo"
+	kernelCmdlinePath     = "/proc/cmdline"
 	createModuleImageFunc = createSquashFSModuleImage
 	restoreModuleTreeFunc = restoreSquashFSModuleTree
 )
@@ -141,6 +147,9 @@ func InstallPacmanHook(executablePath string) error {
 	if err := ensurePlatformHookSupported(); err != nil {
 		return err
 	}
+	if err := ensureInitramfsHookSupported(); err != nil {
+		return err
+	}
 	if strings.TrimSpace(executablePath) == "" {
 		executablePath = defaultHookExecutablePath()
 	}
@@ -151,7 +160,7 @@ func InstallPacmanHook(executablePath string) error {
 	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
 		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must not contain whitespace"}
 	}
-	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath} {
+	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
 		if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 			return err
 		}
@@ -159,12 +168,24 @@ func InstallPacmanHook(executablePath string) error {
 	if err := os.WriteFile(PacmanHookPath, []byte(renderPacmanPreHook(executablePath)), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(PacmanPostHookPath, []byte(renderPacmanPostHook(executablePath)), 0o644)
+	if err := os.WriteFile(PacmanPostHookPath, []byte(renderPacmanPostHook(executablePath)), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(MkinitcpioInstallPath, []byte(renderMkinitcpioInstallHook()), 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(MkinitcpioHookPath, []byte(renderMkinitcpioRuntimeHook()), 0o644); err != nil {
+		return err
+	}
+	if err := enableMkinitcpioHook(); err != nil {
+		return err
+	}
+	return regenerateInitramfs()
 }
 
 func UninstallPacmanHook() (bool, error) {
 	removed := false
-	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath} {
+	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
 		if err := os.Remove(hookPath); err != nil {
 			if os.IsNotExist(err) {
 				continue
@@ -172,6 +193,16 @@ func UninstallPacmanHook() (bool, error) {
 			return removed, err
 		}
 		removed = true
+	}
+	confChanged, err := disableMkinitcpioHook()
+	if err != nil {
+		return removed, err
+	}
+	if confChanged {
+		removed = true
+		if err := regenerateInitramfs(); err != nil {
+			return removed, err
+		}
 	}
 	return removed, nil
 }
@@ -210,6 +241,252 @@ Description = Restoring active bootrecov fallback module trees after boot-critic
 When = PostTransaction
 Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s hook reconcile-active
 `, executablePath)
+}
+
+func renderMkinitcpioInstallHook() string {
+	return `build() {
+    add_binary /usr/bin/unsquashfs
+    add_runscript
+}
+
+help() {
+    cat <<'HELPEOF'
+Restores archived Bootrecov kernel modules during fallback boots.
+HELPEOF
+}
+`
+}
+
+func renderMkinitcpioRuntimeHook() string {
+	return `run_latehook() {
+    local cmdline entry boot_image name version newroot archive modules_parent target staging
+
+    cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+    case " ${cmdline} " in
+        *" bootrecov_entry="*) ;;
+        *) return 0 ;;
+    esac
+
+    for entry in ${cmdline}; do
+        case "${entry}" in
+            BOOT_IMAGE=/bootrecov-snapshots/*)
+                boot_image="${entry#BOOT_IMAGE=/bootrecov-snapshots/}"
+                name="${boot_image%%/*}"
+                ;;
+			BOOT_IMAGE=*/bootrecov-snapshots/*)
+				boot_image="${entry#*/bootrecov-snapshots/}"
+				name="${boot_image%%/*}"
+				;;
+        esac
+    done
+
+    [ -n "${name}" ] || {
+        echo "bootrecov: fallback marker found but snapshot name could not be parsed" >&2
+        return 0
+    }
+
+    case "${name}" in
+        .|..|/*|*/*|*" "*) echo "bootrecov: refusing invalid snapshot name: ${name}" >&2; return 0 ;;
+    esac
+
+    version="$(uname -r)"
+    newroot="${newroot:-/new_root}"
+    archive="${newroot}/var/backups/bootrecov-snapshots/${name}/.bootrecov/root-modules/${version}.sqfs"
+    modules_parent="${newroot}/usr/lib/modules"
+    target="${modules_parent}/${version}"
+
+    [ ! -d "${target}" ] || return 0
+    [ -s "${archive}" ] || {
+        echo "bootrecov: archived modules unavailable: ${archive}" >&2
+        return 0
+    }
+
+    mkdir -p "${modules_parent}" || {
+        echo "bootrecov: cannot create ${modules_parent}" >&2
+        return 0
+    }
+
+    staging="$(mktemp -d "${modules_parent}/.bootrecov-restore.XXXXXX" 2>/dev/null)" || {
+        echo "bootrecov: cannot create module restore staging directory" >&2
+        return 0
+    }
+
+    if ! unsquashfs -d "${staging}" "${archive}" >/dev/null 2>&1; then
+        echo "bootrecov: failed to restore modules from ${archive}" >&2
+        rm -rf "${staging}"
+        return 0
+    fi
+
+    if [ -d "${target}" ]; then
+        rm -rf "${staging}"
+        return 0
+    fi
+
+    if mv "${staging}" "${target}"; then
+        chown -R 0:0 "${target}" 2>/dev/null || true
+        echo "bootrecov: restored modules for ${version} from ${name}" >&2
+    else
+        echo "bootrecov: failed to move restored modules into ${target}" >&2
+        rm -rf "${staging}"
+    fi
+}
+`
+}
+
+func enableMkinitcpioHook() error {
+	data, err := os.ReadFile(MkinitcpioConfPath)
+	if err != nil {
+		return err
+	}
+	updated, changed := updateMkinitcpioHooks(data, true)
+	if !changed {
+		if mkinitcpioHookEnabled(data) {
+			return nil
+		}
+		return fmt.Errorf("%w: could not find editable HOOKS=(...) line in %s", ErrUnsupportedInitramfsHook, MkinitcpioConfPath)
+	}
+	if err := backupMkinitcpioConf(data); err != nil {
+		return err
+	}
+	return writeFilePreservingMode(MkinitcpioConfPath, updated, 0o644)
+}
+
+func disableMkinitcpioHook() (bool, error) {
+	data, err := os.ReadFile(MkinitcpioConfPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	updated, changed := updateMkinitcpioHooks(data, false)
+	if !changed {
+		return false, nil
+	}
+	if err := backupMkinitcpioConf(data); err != nil {
+		return false, err
+	}
+	return true, writeFilePreservingMode(MkinitcpioConfPath, updated, 0o644)
+}
+
+func backupMkinitcpioConf(data []byte) error {
+	backupPath := fmt.Sprintf("%s.bootrecov-%s", MkinitcpioConfPath, time.Now().UTC().Format("20060102-150405"))
+	return os.WriteFile(backupPath, data, 0o644)
+}
+
+func updateMkinitcpioHooks(data []byte, enable bool) ([]byte, bool) {
+	lines := strings.SplitAfter(string(data), "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || !strings.HasPrefix(trimmed, "HOOKS=") {
+			continue
+		}
+		open := strings.Index(line, "(")
+		close := strings.LastIndex(line, ")")
+		if open == -1 || close == -1 || close < open {
+			continue
+		}
+		prefix := line[:open+1]
+		suffix := line[close:]
+		trailingNewline := ""
+		if strings.HasSuffix(suffix, "\n") {
+			trailingNewline = "\n"
+			suffix = strings.TrimSuffix(suffix, "\n")
+		}
+		hooks := strings.Fields(line[open+1 : close])
+		updatedHooks, changed := updateHookList(hooks, enable)
+		if !changed {
+			return data, false
+		}
+		lines[i] = prefix + strings.Join(updatedHooks, " ") + suffix + trailingNewline
+		return []byte(strings.Join(lines, "")), true
+	}
+	return data, false
+}
+
+func mkinitcpioHookEnabled(data []byte) bool {
+	lines := strings.Split(string(data), "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") || !strings.HasPrefix(trimmed, "HOOKS=") {
+			continue
+		}
+		open := strings.Index(line, "(")
+		close := strings.LastIndex(line, ")")
+		if open == -1 || close == -1 || close < open {
+			continue
+		}
+		for _, hook := range strings.Fields(line[open+1 : close]) {
+			if hook == "bootrecov" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func writeFilePreservingMode(path string, data []byte, fallback os.FileMode) error {
+	mode := fallback
+	if st, err := os.Stat(path); err == nil {
+		mode = st.Mode().Perm()
+	}
+	return os.WriteFile(path, data, mode)
+}
+
+func updateHookList(hooks []string, enable bool) ([]string, bool) {
+	hasBootrecov := false
+	for _, hook := range hooks {
+		if hook == "bootrecov" {
+			hasBootrecov = true
+			break
+		}
+	}
+	if enable {
+		if hasBootrecov {
+			return hooks, false
+		}
+		out := make([]string, 0, len(hooks)+1)
+		inserted := false
+		for _, hook := range hooks {
+			out = append(out, hook)
+			if hook == "filesystems" {
+				out = append(out, "bootrecov")
+				inserted = true
+			}
+		}
+		if !inserted {
+			out = append(out, "bootrecov")
+		}
+		return out, true
+	}
+	if !hasBootrecov {
+		return hooks, false
+	}
+	out := make([]string, 0, len(hooks))
+	for _, hook := range hooks {
+		if hook != "bootrecov" {
+			out = append(out, hook)
+		}
+	}
+	return out, true
+}
+
+func regenerateInitramfs() error {
+	if !UpdateInitramfs {
+		return nil
+	}
+	if strings.TrimSpace(MkinitcpioBin) == "" {
+		return fmt.Errorf("%w: mkinitcpio is required but not configured", ErrRequiredToolUnavailable)
+	}
+	if _, err := exec.LookPath(MkinitcpioBin); err != nil {
+		return fmt.Errorf("%w: mkinitcpio is required for initramfs regeneration but was not found in PATH", ErrRequiredToolUnavailable)
+	}
+	cmd := exec.Command(MkinitcpioBin, "-P")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: mkinitcpio -P: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func defaultHookExecutablePath() string {

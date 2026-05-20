@@ -1,4 +1,6 @@
 pre_remove() {
   rm -f /etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook
   rm -f /etc/pacman.d/hooks/96-bootrecov-post-transaction.hook
+  rm -f /usr/lib/initcpio/install/bootrecov
+  rm -f /usr/lib/initcpio/hooks/bootrecov
 }

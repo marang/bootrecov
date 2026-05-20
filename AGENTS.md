@@ -55,6 +55,7 @@ Important behavior:
 - Platform and bootloader detection with environment overrides
 - Recovery command generation for activated snapshots
 - Pacman hook installation for pre-transaction snapshots and post-transaction active fallback reconciliation
+- Arch/mkinitcpio boot-time module restore hook installation for self-restoring GRUB fallback boots
 - Rootless QEMU integration test harness under `test/bootvm/`
 - Tagged release workflow via GoReleaser
 - Tagged AUR publish workflow using `PKGBUILD`
@@ -130,6 +131,7 @@ Normal operation typically requires elevated privileges because the app writes t
 - `/boot/efi/bootrecov-snapshots`
 - `/etc/grub.d/41_bootrecov_snapshots`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` and `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook` on Arch
+- `/usr/lib/initcpio/install/bootrecov`, `/usr/lib/initcpio/hooks/bootrecov`, and `/etc/mkinitcpio.conf` on Arch/mkinitcpio
   These hooks are created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package.
 
 Environment overrides:
@@ -139,6 +141,13 @@ Environment overrides:
 - `BOOTRECOV_BOOT_DIR=/boot`
 - `BOOTRECOV_ESP_DIR=/boot/efi`
 - `BOOTRECOV_EFI_MIRROR_DIR=/boot/efi/bootrecov-snapshots`
+- `BOOTRECOV_ROOT_MODULES_DIR=/usr/lib/modules`
+- `BOOTRECOV_PACMAN_HOOK_PATH=/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
+- `BOOTRECOV_PACMAN_POST_HOOK_PATH=/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook`
+- `BOOTRECOV_MKINITCPIO_CONF=/etc/mkinitcpio.conf`
+- `BOOTRECOV_MKINITCPIO_INSTALL_HOOK=/usr/lib/initcpio/install/bootrecov`
+- `BOOTRECOV_MKINITCPIO_RUNTIME_HOOK=/usr/lib/initcpio/hooks/bootrecov`
+- `BOOTRECOV_MKINITCPIO_BIN=mkinitcpio`
 
 Path detection should handle common `/boot/efi`, `/efi`, and ESP-at-`/boot` layouts conservatively. Explicit environment overrides always take precedence.
 
@@ -166,6 +175,9 @@ Installed Arch hook paths:
 
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
 - `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook`
+- `/usr/lib/initcpio/install/bootrecov`
+- `/usr/lib/initcpio/hooks/bootrecov`
+- `/etc/mkinitcpio.conf` is updated to include `bootrecov` in `HOOKS=(...)`
 
 Current trigger set:
 
@@ -182,6 +194,8 @@ Current Arch action:
 - if snapshot space is insufficient, the hook prints a warning and exits successfully so the package transaction is not blocked
 - non-space pre-transaction errors still fail the hook
 - post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction
+- mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/usr/lib/modules/<kernel-version>` only for Bootrecov GRUB fallback boots
+- dracut and initramfs-tools boot-time restore adapters are planned but not implemented
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.
 

@@ -12,6 +12,7 @@ var (
 	ErrHookExecutablePath         = errors.New("invalid hook executable path")
 	ErrUnsupportedBootloader      = errors.New("unsupported bootloader")
 	ErrUnsupportedPackageHook     = errors.New("unsupported package-manager hook")
+	ErrUnsupportedInitramfsHook   = errors.New("unsupported initramfs hook")
 	ErrBackupNotFound             = errors.New("backup not found")
 	ErrBackupIncomplete           = errors.New("backup incomplete")
 	ErrBackupNotActivated         = errors.New("backup not activated")

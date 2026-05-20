@@ -134,7 +134,7 @@ func grubEntryExistsByID(id string) (bool, error) {
 }
 
 func currentKernelCmdline() string {
-	data, err := os.ReadFile("/proc/cmdline")
+	data, err := os.ReadFile(kernelCmdlinePath)
 	if err != nil {
 		return "rw"
 	}

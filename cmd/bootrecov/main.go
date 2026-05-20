@@ -120,6 +120,9 @@ func newDoctorCmd() *cobra.Command {
 			fmt.Fprintf(tw, "grub-cfg-output\t%s\n", info.Layout.GrubCfgOutput)
 			fmt.Fprintf(tw, "pacman-hook-path\t%s\n", info.Layout.PacmanHookPath)
 			fmt.Fprintf(tw, "pacman-post-hook-path\t%s\n", info.Layout.PacmanPostHookPath)
+			fmt.Fprintf(tw, "mkinitcpio-install-hook\t%s\n", info.Layout.MkinitcpioInstallHook)
+			fmt.Fprintf(tw, "mkinitcpio-runtime-hook\t%s\n", info.Layout.MkinitcpioRuntimeHook)
+			fmt.Fprintf(tw, "mkinitcpio-config\t%s\n", info.Layout.MkinitcpioConfig)
 			for _, warning := range info.Warnings {
 				fmt.Fprintf(tw, "warning\t%s\n", warning)
 			}
@@ -146,6 +149,7 @@ func newHookCmd() *cobra.Command {
 				return err
 			}
 			fmt.Printf("installed package-manager hooks at %s and %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
+			fmt.Printf("installed mkinitcpio boot restore hooks at %s and %s\n", tui.MkinitcpioInstallPath, tui.MkinitcpioHookPath)
 			return nil
 		},
 	}
@@ -159,10 +163,10 @@ func newHookCmd() *cobra.Command {
 				return err
 			}
 			if removed {
-				fmt.Printf("removed package-manager hooks at %s and %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
+				fmt.Printf("removed package-manager hooks and mkinitcpio boot restore hooks\n")
 				return nil
 			}
-			fmt.Printf("package-manager hooks not installed at %s or %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
+			fmt.Printf("package-manager hooks and mkinitcpio boot restore hooks are not installed\n")
 			return nil
 		},
 	}

@@ -27,7 +27,8 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - Remove stale inactive EFI mirrors.
 - Preserve an already bootable GRUB entry if refreshing its active EFI mirror fails transiently.
 - Print GRUB recovery commands for an activated snapshot.
-- Install pacman hooks to create snapshots before boot-critical package changes and refresh active recovery entries after them.
+- Install Arch pacman hooks to create snapshots before boot-critical package changes and refresh active recovery entries after them.
+- Install an Arch/mkinitcpio boot-time restore hook so selected GRUB fallbacks can restore missing archived modules automatically after root mount.
 - Archive the matching `/usr/lib/modules/<kernel-version>` tree as compressed SquashFS metadata inside the snapshot source.
 - Restore archived `/usr/lib/modules/<kernel-version>` trees automatically during activation when the live tree is missing.
 - Validate snapshot names before path-sensitive operations.
@@ -42,6 +43,7 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - It does not detect failed boots automatically.
 - It does not prune old snapshots automatically yet.
 - It does not install apt/dpkg hooks yet.
+- It does not install dracut or initramfs-tools boot-time restore hooks yet.
 - It detects `systemd-boot`, but does not manage systemd-boot entries yet.
 - It is not a replacement for a rescue USB or real system backups.
 
@@ -87,6 +89,9 @@ Normal operation usually requires root because Bootrecov writes to:
 - `/boot/grub/grub.cfg`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
 - `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook`
+- `/usr/lib/initcpio/install/bootrecov`
+- `/usr/lib/initcpio/hooks/bootrecov`
+- `/etc/mkinitcpio.conf`
 
 ## Support Matrix
 
@@ -120,6 +125,13 @@ BOOTRECOV_BOOTLOADER=grub
 BOOTRECOV_BOOT_DIR=/boot
 BOOTRECOV_ESP_DIR=/boot/efi
 BOOTRECOV_EFI_MIRROR_DIR=/boot/efi/bootrecov-snapshots
+BOOTRECOV_ROOT_MODULES_DIR=/usr/lib/modules
+BOOTRECOV_PACMAN_HOOK_PATH=/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook
+BOOTRECOV_PACMAN_POST_HOOK_PATH=/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook
+BOOTRECOV_MKINITCPIO_CONF=/etc/mkinitcpio.conf
+BOOTRECOV_MKINITCPIO_INSTALL_HOOK=/usr/lib/initcpio/install/bootrecov
+BOOTRECOV_MKINITCPIO_RUNTIME_HOOK=/usr/lib/initcpio/hooks/bootrecov
+BOOTRECOV_MKINITCPIO_BIN=mkinitcpio
 ```
 
 The detailed expansion roadmap for future distributions and bootloaders lives in [`docs/roadmap/`](docs/roadmap/README.md).
@@ -348,14 +360,16 @@ Install:
 sudo bootrecov hook install
 ```
 
-On Arch, the installed hook path is:
+On Arch with mkinitcpio, `bootrecov hook install` installs pacman hooks and an initramfs restore hook:
 
 ```text
 /etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook
 /etc/pacman.d/hooks/96-bootrecov-post-transaction.hook
+/usr/lib/initcpio/install/bootrecov
+/usr/lib/initcpio/hooks/bootrecov
 ```
 
-The hooks run:
+The pacman hooks run:
 
 ```bash
 /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook backup-now
@@ -365,6 +379,8 @@ The hooks run:
 Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; they are not automatically activated in EFI or the bootloader. If there is not enough space for a pre-transaction snapshot, the hook prints a warning and skips the snapshot so the package transaction is not blocked. Other pre-transaction errors still fail the hook.
 
 After the transaction, the post hook reconciles active Bootrecov entries. This restores archived module trees for already-active fallback kernels if the package update removed `/usr/lib/modules/<old-version>`, then refreshes EFI mirrors and bootloader state. Post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction.
+
+The mkinitcpio runtime hook is a second safety net. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. This path is Arch/mkinitcpio-specific; dracut and initramfs-tools need separate adapters and are not installed yet.
 
 ```mermaid
 flowchart TD
@@ -383,10 +399,13 @@ flowchart TD
     K -->|No, archive exists| M["Restore modules from snapshot SquashFS into /usr/lib/modules/<fallback-version>"]
     K -->|No archive| N["Warn and leave entry not boot-ready"]
     M --> L
-    L --> O["Later GRUB fallback boot uses old kernel plus restored matching modules"]
+    L --> O{"Later GRUB fallback boot still missing modules?"}
+    O -->|No| P["Boot continues with matching modules"]
+    O -->|Yes| Q["mkinitcpio late hook extracts archived modules into /new_root/usr/lib/modules/<fallback-version>"]
+    Q --> P
 ```
 
-The Arch package removal script also removes both pacman hook files when uninstalling `bootrecov`, so stale hooks do not remain pointed at a missing binary.
+The Arch package removal script also removes both pacman hook files and Bootrecov's mkinitcpio hook files when uninstalling `bootrecov`, so stale hooks do not remain pointed at a missing binary.
 
 Current trigger targets:
 

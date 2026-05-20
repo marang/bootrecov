@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -29,8 +30,8 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
-	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
+	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
 	GrubCfgOutput = filepath.Join(filepath.Dir(grub), "grub.cfg")
 	GrubMkconfig = ""
@@ -38,6 +39,11 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	RootModulesDir = filepath.Join(filepath.Dir(grub), "modules")
 	PacmanHookPath = filepath.Join(filepath.Dir(grub), "bootrecov.hook")
 	PacmanPostHookPath = filepath.Join(filepath.Dir(grub), "bootrecov-post.hook")
+	MkinitcpioInstallPath = filepath.Join(filepath.Dir(grub), "initcpio", "install", "bootrecov")
+	MkinitcpioHookPath = filepath.Join(filepath.Dir(grub), "initcpio", "hooks", "bootrecov")
+	MkinitcpioConfPath = filepath.Join(filepath.Dir(grub), "mkinitcpio.conf")
+	MkinitcpioBin = ""
+	UpdateInitramfs = false
 	RcloneBin = ""
 	RequireRclone = false
 	MksquashfsBin = ""
@@ -48,6 +54,7 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	createModuleImageFunc = fakeCreateModuleImage
 	restoreModuleTreeFunc = fakeRestoreModuleTree
 	statfsFunc = syscall.Statfs
+	kernelCmdlinePath = filepath.Join(filepath.Dir(grub), "cmdline")
 	OSReleasePath = filepath.Join(filepath.Dir(grub), "os-release")
 	GrubDefaultPath = filepath.Join(filepath.Dir(grub), "default-grub")
 	PlatformOverride = ""
@@ -58,9 +65,10 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	activeBootloaderID = BootloaderGRUB
 	activeBootloaderName = "GRUB"
 	activeWarnings = nil
+	writeFileWithContent(t, MkinitcpioConfPath, "HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)\n")
 	t.Cleanup(func() {
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
-			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
+			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
 	})
 }
 
@@ -288,6 +296,16 @@ func writeFile(t *testing.T, path string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(path, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFileWithContent(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -818,6 +836,31 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 	if !strings.Contains(postText, "Target = linux*") || !strings.Contains(postText, "Target = grub") {
 		t.Fatalf("expected boot-critical package targets in post hook: %s", postText)
 	}
+	installData, err := os.ReadFile(MkinitcpioInstallPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	installText := string(installData)
+	if !strings.Contains(installText, "add_binary /usr/bin/unsquashfs") || !strings.Contains(installText, "add_runscript") {
+		t.Fatalf("unexpected mkinitcpio install hook content: %s", installText)
+	}
+	runtimeData, err := os.ReadFile(MkinitcpioHookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeText := string(runtimeData)
+	for _, want := range []string{"run_latehook()", "bootrecov_entry=", "unsquashfs -d", "/new_root", ".bootrecov/root-modules"} {
+		if !strings.Contains(runtimeText, want) {
+			t.Fatalf("expected runtime hook to contain %q: %s", want, runtimeText)
+		}
+	}
+	confData, err := os.ReadFile(MkinitcpioConfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(confData), "filesystems bootrecov keyboard") {
+		t.Fatalf("expected bootrecov hook after filesystems in mkinitcpio config: %s", string(confData))
+	}
 }
 
 func TestUninstallPacmanHookRemovesHookWhenPresent(t *testing.T) {
@@ -840,6 +883,19 @@ func TestUninstallPacmanHookRemovesHookWhenPresent(t *testing.T) {
 	if _, err := os.Stat(PacmanPostHookPath); !os.IsNotExist(err) {
 		t.Fatalf("expected post hook path to be gone, err=%v", err)
 	}
+	if _, err := os.Stat(MkinitcpioInstallPath); !os.IsNotExist(err) {
+		t.Fatalf("expected mkinitcpio install hook to be gone, err=%v", err)
+	}
+	if _, err := os.Stat(MkinitcpioHookPath); !os.IsNotExist(err) {
+		t.Fatalf("expected mkinitcpio runtime hook to be gone, err=%v", err)
+	}
+	confData, err := os.ReadFile(MkinitcpioConfPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(confData), "bootrecov") {
+		t.Fatalf("expected bootrecov to be removed from mkinitcpio config: %s", string(confData))
+	}
 }
 
 func TestUninstallPacmanHookIsIdempotent(t *testing.T) {
@@ -852,6 +908,63 @@ func TestUninstallPacmanHookIsIdempotent(t *testing.T) {
 	}
 	if removed {
 		t.Fatal("missing hook should not report removed")
+	}
+}
+
+func TestUpdateMkinitcpioHooksInsertsAfterFilesystems(t *testing.T) {
+	input := []byte("MODULES=()\nHOOKS=(base udev block filesystems keyboard fsck)\n")
+	got, changed := updateMkinitcpioHooks(input, true)
+	if !changed {
+		t.Fatal("expected mkinitcpio config to change")
+	}
+	if !strings.Contains(string(got), "HOOKS=(base udev block filesystems bootrecov keyboard fsck)") {
+		t.Fatalf("unexpected mkinitcpio config:\n%s", string(got))
+	}
+	gotAgain, changedAgain := updateMkinitcpioHooks(got, true)
+	if changedAgain {
+		t.Fatalf("bootrecov hook should not be duplicated:\n%s", string(gotAgain))
+	}
+}
+
+func TestUpdateMkinitcpioHooksAppendsWithoutFilesystems(t *testing.T) {
+	input := []byte("HOOKS=(base udev)\n")
+	got, changed := updateMkinitcpioHooks(input, true)
+	if !changed {
+		t.Fatal("expected mkinitcpio config to change")
+	}
+	if !strings.Contains(string(got), "HOOKS=(base udev bootrecov)") {
+		t.Fatalf("unexpected mkinitcpio config:\n%s", string(got))
+	}
+}
+
+func TestUpdateMkinitcpioHooksRemovesOnlyBootrecov(t *testing.T) {
+	input := []byte("HOOKS=(base filesystems bootrecov keyboard)\n")
+	got, changed := updateMkinitcpioHooks(input, false)
+	if !changed {
+		t.Fatal("expected mkinitcpio config to change")
+	}
+	if string(got) != "HOOKS=(base filesystems keyboard)\n" {
+		t.Fatalf("unexpected mkinitcpio config:\n%s", string(got))
+	}
+}
+
+func TestRenderMkinitcpioRuntimeHookHasShellSyntax(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bootrecov-hook")
+	if err := os.WriteFile(path, []byte(renderMkinitcpioRuntimeHook()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	checked := false
+	for _, shell := range []string{"bash", "sh"} {
+		if _, err := exec.LookPath(shell); err != nil {
+			continue
+		}
+		checked = true
+		if out, err := exec.Command(shell, "-n", path).CombinedOutput(); err != nil {
+			t.Fatalf("runtime hook shell syntax failed with %s: %v: %s", shell, err, strings.TrimSpace(string(out)))
+		}
+	}
+	if !checked {
+		t.Skip("no shell available for syntax check")
 	}
 }
 
@@ -942,6 +1055,30 @@ func TestInstallPacmanHookRejectsUbuntuUntilAptHookExists(t *testing.T) {
 	err := InstallPacmanHook("/usr/bin/bootrecov")
 	if !errors.Is(err, ErrUnsupportedPackageHook) {
 		t.Fatalf("expected planned apt hook error, got %v", err)
+	}
+}
+
+func TestInstallPacmanHookRejectsArchWithoutMkinitcpioConfig(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	if err := os.Remove(MkinitcpioConfPath); err != nil {
+		t.Fatal(err)
+	}
+
+	err := InstallPacmanHook("/usr/bin/bootrecov")
+	if !errors.Is(err, ErrUnsupportedInitramfsHook) {
+		t.Fatalf("expected unsupported initramfs hook error, got %v", err)
+	}
+}
+
+func TestInstallPacmanHookRejectsMkinitcpioConfigWithoutHooksLine(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	writeFileWithContent(t, MkinitcpioConfPath, "MODULES=()\n")
+
+	err := InstallPacmanHook("/usr/bin/bootrecov")
+	if !errors.Is(err, ErrUnsupportedInitramfsHook) {
+		t.Fatalf("expected unsupported initramfs hook error, got %v", err)
 	}
 }
 
