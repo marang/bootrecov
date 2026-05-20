@@ -29,14 +29,15 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
-	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
+	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
 	GrubCfgOutput = filepath.Join(filepath.Dir(grub), "grub.cfg")
 	GrubMkconfig = ""
 	AutoUpdateGrub = false
 	RootModulesDir = filepath.Join(filepath.Dir(grub), "modules")
 	PacmanHookPath = filepath.Join(filepath.Dir(grub), "bootrecov.hook")
+	PacmanPostHookPath = filepath.Join(filepath.Dir(grub), "bootrecov-post.hook")
 	RcloneBin = ""
 	RequireRclone = false
 	MksquashfsBin = ""
@@ -58,8 +59,8 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	activeBootloaderName = "GRUB"
 	activeWarnings = nil
 	t.Cleanup(func() {
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
-			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
+			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
 	})
 }
 
@@ -762,16 +763,27 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 	if err := InstallPacmanHook("/usr/bin/bootrecov"); err != nil {
 		t.Fatal(err)
 	}
-	data, err := os.ReadFile(PacmanHookPath)
+	preData, err := os.ReadFile(PacmanHookPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
-	if !strings.Contains(text, "Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now") {
-		t.Fatalf("unexpected hook content: %s", text)
+	preText := string(preData)
+	if !strings.Contains(preText, "When = PreTransaction") || !strings.Contains(preText, "Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now") {
+		t.Fatalf("unexpected pre hook content: %s", preText)
 	}
-	if !strings.Contains(text, "Target = linux*") || !strings.Contains(text, "Target = grub") {
-		t.Fatalf("expected boot-critical package targets in hook: %s", text)
+	if !strings.Contains(preText, "Target = linux*") || !strings.Contains(preText, "Target = grub") {
+		t.Fatalf("expected boot-critical package targets in pre hook: %s", preText)
+	}
+	postData, err := os.ReadFile(PacmanPostHookPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	postText := string(postData)
+	if !strings.Contains(postText, "When = PostTransaction") || !strings.Contains(postText, "Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook reconcile-active") {
+		t.Fatalf("unexpected post hook content: %s", postText)
+	}
+	if !strings.Contains(postText, "Target = linux*") || !strings.Contains(postText, "Target = grub") {
+		t.Fatalf("expected boot-critical package targets in post hook: %s", postText)
 	}
 }
 
@@ -790,7 +802,10 @@ func TestUninstallPacmanHookRemovesHookWhenPresent(t *testing.T) {
 		t.Fatal("expected hook to be removed")
 	}
 	if _, err := os.Stat(PacmanHookPath); !os.IsNotExist(err) {
-		t.Fatalf("expected hook path to be gone, err=%v", err)
+		t.Fatalf("expected pre hook path to be gone, err=%v", err)
+	}
+	if _, err := os.Stat(PacmanPostHookPath); !os.IsNotExist(err) {
+		t.Fatalf("expected post hook path to be gone, err=%v", err)
 	}
 }
 

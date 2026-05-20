@@ -205,7 +205,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.status = fmt.Sprintf("hook install failed: %v", err)
 					break
 				}
-				m.status = fmt.Sprintf("package-manager hook installed: %s", PacmanHookPath)
+				m.status = fmt.Sprintf("package-manager hooks installed: %s, %s", PacmanHookPath, PacmanPostHookPath)
 			}
 		case "r":
 			if m.mode == modeBackups && len(m.Backups) > 0 {

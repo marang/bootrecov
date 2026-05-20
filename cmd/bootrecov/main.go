@@ -118,6 +118,7 @@ func newDoctorCmd() *cobra.Command {
 			fmt.Fprintf(tw, "grub-custom\t%s\n", info.Layout.GrubCustom)
 			fmt.Fprintf(tw, "grub-cfg-output\t%s\n", info.Layout.GrubCfgOutput)
 			fmt.Fprintf(tw, "pacman-hook-path\t%s\n", info.Layout.PacmanHookPath)
+			fmt.Fprintf(tw, "pacman-post-hook-path\t%s\n", info.Layout.PacmanPostHookPath)
 			for _, warning := range info.Warnings {
 				fmt.Fprintf(tw, "warning\t%s\n", warning)
 			}
@@ -143,7 +144,7 @@ func newHookCmd() *cobra.Command {
 			if err := tui.InstallPacmanHook(path); err != nil {
 				return err
 			}
-			fmt.Printf("installed package-manager hook at %s\n", tui.PacmanHookPath)
+			fmt.Printf("installed package-manager hooks at %s and %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
 			return nil
 		},
 	}
@@ -157,10 +158,10 @@ func newHookCmd() *cobra.Command {
 				return err
 			}
 			if removed {
-				fmt.Printf("removed package-manager hook at %s\n", tui.PacmanHookPath)
+				fmt.Printf("removed package-manager hooks at %s and %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
 				return nil
 			}
-			fmt.Printf("package-manager hook not installed at %s\n", tui.PacmanHookPath)
+			fmt.Printf("package-manager hooks not installed at %s or %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
 			return nil
 		},
 	}
@@ -181,7 +182,21 @@ func newHookCmd() *cobra.Command {
 			return nil
 		},
 	}
-	hookCmd.AddCommand(installCmd, uninstallCmd, backupNowCmd)
+	reconcileActiveCmd := &cobra.Command{
+		Use:    "reconcile-active",
+		Hidden: true,
+		Short:  "Refresh active recovery entries from a package-manager hook",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			backups, entries, err := tui.SyncBackupsAndGrub()
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "bootrecov warning: active fallback reconcile failed after package transaction: %v\n", err)
+				return nil
+			}
+			fmt.Fprintf(os.Stderr, "bootrecov: reconciled %d backups and %d bootloader entries after package transaction\n", len(backups), len(entries))
+			return nil
+		},
+	}
+	hookCmd.AddCommand(installCmd, uninstallCmd, backupNowCmd, reconcileActiveCmd)
 	return hookCmd
 }
 

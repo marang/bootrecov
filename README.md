@@ -27,7 +27,7 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - Remove stale inactive EFI mirrors.
 - Preserve an already bootable GRUB entry if refreshing its active EFI mirror fails transiently.
 - Print GRUB recovery commands for an activated snapshot.
-- Install a pacman pre-transaction hook to create snapshots before boot-critical package changes.
+- Install pacman hooks to create snapshots before boot-critical package changes and refresh active recovery entries after them.
 - Archive the matching `/usr/lib/modules/<kernel-version>` tree as compressed SquashFS metadata inside the snapshot source.
 - Restore archived `/usr/lib/modules/<kernel-version>` trees automatically during activation when the live tree is missing.
 - Validate snapshot names before path-sensitive operations.
@@ -86,6 +86,7 @@ Normal operation usually requires root because Bootrecov writes to:
 - `/etc/grub.d/41_bootrecov_snapshots`
 - `/boot/grub/grub.cfg`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
+- `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook`
 
 ## Support Matrix
 
@@ -351,17 +352,21 @@ On Arch, the installed hook path is:
 
 ```text
 /etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook
+/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook
 ```
 
-The hook runs:
+The hooks run:
 
 ```bash
 /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook backup-now
+/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook reconcile-active
 ```
 
-Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; they are not automatically activated in EFI or the bootloader. If there is not enough space for a pre-transaction snapshot, the hook prints a warning and skips the snapshot so the package transaction is not blocked. Other errors still fail the hook.
+Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; they are not automatically activated in EFI or the bootloader. If there is not enough space for a pre-transaction snapshot, the hook prints a warning and skips the snapshot so the package transaction is not blocked. Other pre-transaction errors still fail the hook.
 
-The Arch package removal script also removes `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` when uninstalling `bootrecov`, so a stale hook does not remain pointed at a missing binary.
+After the transaction, the post hook reconciles active Bootrecov entries. This restores archived module trees for already-active fallback kernels if the package update removed `/usr/lib/modules/<old-version>`, then refreshes EFI mirrors and bootloader state. Post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction.
+
+The Arch package removal script also removes both pacman hook files when uninstalling `bootrecov`, so stale hooks do not remain pointed at a missing binary.
 
 Current trigger targets:
 

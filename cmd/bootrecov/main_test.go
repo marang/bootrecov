@@ -44,9 +44,18 @@ func TestHookBackupNowReturnsNonSpaceErrors(t *testing.T) {
 
 func TestHookUninstallRemovesHook(t *testing.T) {
 	oldHookPath := tui.PacmanHookPath
-	tui.PacmanHookPath = filepath.Join(t.TempDir(), "bootrecov.hook")
-	t.Cleanup(func() { tui.PacmanHookPath = oldHookPath })
+	oldPostHookPath := tui.PacmanPostHookPath
+	hookDir := t.TempDir()
+	tui.PacmanHookPath = filepath.Join(hookDir, "bootrecov.hook")
+	tui.PacmanPostHookPath = filepath.Join(hookDir, "bootrecov-post.hook")
+	t.Cleanup(func() {
+		tui.PacmanHookPath = oldHookPath
+		tui.PacmanPostHookPath = oldPostHookPath
+	})
 	if err := os.WriteFile(tui.PacmanHookPath, []byte("hook"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(tui.PacmanPostHookPath, []byte("hook"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv(riskAcceptEnv, "1")
@@ -57,7 +66,10 @@ func TestHookUninstallRemovesHook(t *testing.T) {
 		t.Fatalf("hook uninstall failed: %v", err)
 	}
 	if _, err := os.Stat(tui.PacmanHookPath); !os.IsNotExist(err) {
-		t.Fatalf("expected hook to be removed, err=%v", err)
+		t.Fatalf("expected pre hook to be removed, err=%v", err)
+	}
+	if _, err := os.Stat(tui.PacmanPostHookPath); !os.IsNotExist(err) {
+		t.Fatalf("expected post hook to be removed, err=%v", err)
 	}
 }
 

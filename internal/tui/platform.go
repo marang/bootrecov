@@ -27,14 +27,15 @@ const (
 )
 
 type SystemLayout struct {
-	BootDir        string
-	ESPRoot        string
-	EFIMirrorDir   string
-	SnapshotDir    string
-	RootModulesDir string
-	GrubCustom     string
-	GrubCfgOutput  string
-	PacmanHookPath string
+	BootDir            string
+	ESPRoot            string
+	EFIMirrorDir       string
+	SnapshotDir        string
+	RootModulesDir     string
+	GrubCustom         string
+	GrubCfgOutput      string
+	PacmanHookPath     string
+	PacmanPostHookPath string
 }
 
 type RuntimeEnvironment struct {
@@ -126,14 +127,15 @@ func CurrentRuntimeEnvironment() RuntimeEnvironment {
 
 func currentSystemLayout() SystemLayout {
 	return SystemLayout{
-		BootDir:        BootDir,
-		ESPRoot:        filepath.Dir(EfiDir),
-		EFIMirrorDir:   EfiDir,
-		SnapshotDir:    SnapshotDir,
-		RootModulesDir: RootModulesDir,
-		GrubCustom:     GrubCustom,
-		GrubCfgOutput:  GrubCfgOutput,
-		PacmanHookPath: PacmanHookPath,
+		BootDir:            BootDir,
+		ESPRoot:            filepath.Dir(EfiDir),
+		EFIMirrorDir:       EfiDir,
+		SnapshotDir:        SnapshotDir,
+		RootModulesDir:     RootModulesDir,
+		GrubCustom:         GrubCustom,
+		GrubCfgOutput:      GrubCfgOutput,
+		PacmanHookPath:     PacmanHookPath,
+		PacmanPostHookPath: PacmanPostHookPath,
 	}
 }
 
@@ -374,6 +376,9 @@ func applyPlatformDefaults(platformID string) {
 	case PlatformArch:
 		if PacmanHookPath == "" {
 			PacmanHookPath = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
+		}
+		if PacmanPostHookPath == "" {
+			PacmanPostHookPath = "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook"
 		}
 		activeHookSupported = true
 	case PlatformUbuntu, PlatformDebian:

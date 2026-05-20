@@ -54,7 +54,7 @@ Important behavior:
 - GRUB entry add, remove, and parse
 - Platform and bootloader detection with environment overrides
 - Recovery command generation for activated snapshots
-- Pacman hook installation for pre-transaction snapshots
+- Pacman hook installation for pre-transaction snapshots and post-transaction active fallback reconciliation
 - Rootless QEMU integration test harness under `test/bootvm/`
 - Tagged release workflow via GoReleaser
 - Tagged AUR publish workflow using `PKGBUILD`
@@ -129,8 +129,8 @@ Normal operation typically requires elevated privileges because the app writes t
 - `/var/backups/bootrecov-snapshots`
 - `/boot/efi/bootrecov-snapshots`
 - `/etc/grub.d/41_bootrecov_snapshots`
-- `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` on Arch
-  This hook is created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package.
+- `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` and `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook` on Arch
+  These hooks are created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package.
 
 Environment overrides:
 
@@ -162,9 +162,10 @@ Environment variable:
 
 ## Package Hooks
 
-Installed Arch hook path:
+Installed Arch hook paths:
 
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook`
+- `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook`
 
 Current trigger set:
 
@@ -176,9 +177,11 @@ Current trigger set:
 Current Arch action:
 
 - run `/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook backup-now` before the transaction
+- run `/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 bootrecov hook reconcile-active` after the transaction to restore archived modules for already-active fallback kernels and refresh EFI/GRUB state
 - hook-created snapshots are not activated in EFI or the bootloader automatically
 - if snapshot space is insufficient, the hook prints a warning and exits successfully so the package transaction is not blocked
-- non-space errors still fail the hook
+- non-space pre-transaction errors still fail the hook
+- post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.
 

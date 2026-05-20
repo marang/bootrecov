@@ -61,6 +61,7 @@ var (
 	AutoUpdateGrub        = true
 	RootModulesDir        = "/usr/lib/modules"
 	PacmanHookPath        = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
+	PacmanPostHookPath    = "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook"
 	RcloneBin             = "rclone"
 	RequireRclone         = true
 	MksquashfsBin         = "mksquashfs"
@@ -150,23 +151,32 @@ func InstallPacmanHook(executablePath string) error {
 	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
 		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must not contain whitespace"}
 	}
-	if err := os.MkdirAll(filepath.Dir(PacmanHookPath), 0o755); err != nil {
+	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath} {
+		if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
+			return err
+		}
+	}
+	if err := os.WriteFile(PacmanHookPath, []byte(renderPacmanPreHook(executablePath)), 0o644); err != nil {
 		return err
 	}
-	return os.WriteFile(PacmanHookPath, []byte(renderPacmanHook(executablePath)), 0o644)
+	return os.WriteFile(PacmanPostHookPath, []byte(renderPacmanPostHook(executablePath)), 0o644)
 }
 
 func UninstallPacmanHook() (bool, error) {
-	if err := os.Remove(PacmanHookPath); err != nil {
-		if os.IsNotExist(err) {
-			return false, nil
+	removed := false
+	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath} {
+		if err := os.Remove(hookPath); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, err
 		}
-		return false, err
+		removed = true
 	}
-	return true, nil
+	return removed, nil
 }
 
-func renderPacmanHook(executablePath string) string {
+func renderPacmanPreHook(executablePath string) string {
 	return fmt.Sprintf(`[Trigger]
 Operation = Install
 Operation = Upgrade
@@ -181,6 +191,24 @@ Target = systemd
 Description = Creating bootrecov snapshot before boot-critical package transaction...
 When = PreTransaction
 Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s hook backup-now
+`, executablePath)
+}
+
+func renderPacmanPostHook(executablePath string) string {
+	return fmt.Sprintf(`[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = linux*
+Target = grub
+Target = mkinitcpio
+Target = systemd
+
+[Action]
+Description = Restoring active bootrecov fallback module trees after boot-critical package transaction...
+When = PostTransaction
+Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s hook reconcile-active
 `, executablePath)
 }
 
