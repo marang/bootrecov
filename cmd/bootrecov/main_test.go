@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -140,6 +141,72 @@ func TestHookUninstallRemovesHook(t *testing.T) {
 	if _, err := os.Stat(tui.MkinitcpioHookPath); !os.IsNotExist(err) {
 		t.Fatalf("expected mkinitcpio runtime hook to be removed, err=%v", err)
 	}
+}
+
+func TestPackagePreRemoveCleansMkinitcpioConfig(t *testing.T) {
+	base := t.TempDir()
+	preHook := filepath.Join(base, "hooks", "pre.hook")
+	postHook := filepath.Join(base, "hooks", "post.hook")
+	installHook := filepath.Join(base, "initcpio", "install", "bootrecov")
+	runtimeHook := filepath.Join(base, "initcpio", "hooks", "bootrecov")
+	conf := filepath.Join(base, "mkinitcpio.conf")
+	for _, path := range []string{preHook, postHook, installHook, runtimeHook} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("hook"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(conf, []byte("MODULES=()\nHOOKS=(base filesystems bootrecov keyboard fsck)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(base, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkinitcpioLog := filepath.Join(base, "mkinitcpio.log")
+	mkinitcpio := filepath.Join(binDir, "mkinitcpio")
+	if err := os.WriteFile(mkinitcpio, []byte(fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >%s\n", shellQuote(mkinitcpioLog))), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", "-c", ". ../../bootrecov.install; pre_remove")
+	cmd.Env = append(os.Environ(),
+		"BOOTRECOV_PACMAN_HOOK_PATH="+preHook,
+		"BOOTRECOV_PACMAN_POST_HOOK_PATH="+postHook,
+		"BOOTRECOV_MKINITCPIO_INSTALL_HOOK="+installHook,
+		"BOOTRECOV_MKINITCPIO_RUNTIME_HOOK="+runtimeHook,
+		"BOOTRECOV_MKINITCPIO_CONF="+conf,
+		"PATH="+binDir+string(os.PathListSeparator)+os.Getenv("PATH"),
+	)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pre_remove failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	for _, path := range []string{preHook, postHook, installHook, runtimeHook} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("expected %s to be removed, stat err=%v", path, statErr)
+		}
+	}
+	confData, err := os.ReadFile(conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(confData), "bootrecov") {
+		t.Fatalf("expected bootrecov hook to be removed from mkinitcpio config:\n%s", string(confData))
+	}
+	logData, err := os.ReadFile(mkinitcpioLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(logData)) != "-P" {
+		t.Fatalf("expected mkinitcpio -P to run, log=%q", string(logData))
+	}
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func TestRiskConfirmationAcceptedUsesDefaultNo(t *testing.T) {

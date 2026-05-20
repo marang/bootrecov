@@ -143,7 +143,7 @@ func CreateBootBackupNow() (BootBackup, error) {
 	return created, nil
 }
 
-func InstallPacmanHook(executablePath string) error {
+func InstallPacmanHook(executablePath string) (err error) {
 	if err := ensurePlatformHookSupported(); err != nil {
 		return err
 	}
@@ -160,6 +160,18 @@ func InstallPacmanHook(executablePath string) error {
 	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
 		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must not contain whitespace"}
 	}
+	snapshots, err := snapshotInstallPaths([]string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath})
+	if err != nil {
+		return err
+	}
+	installed := false
+	defer func() {
+		if err != nil && !installed {
+			if rollbackErr := restoreInstallPathSnapshots(snapshots); rollbackErr != nil {
+				err = errors.Join(err, rollbackErr)
+			}
+		}
+	}()
 	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
 		if err := os.MkdirAll(filepath.Dir(hookPath), 0o755); err != nil {
 			return err
@@ -180,7 +192,11 @@ func InstallPacmanHook(executablePath string) error {
 	if err := enableMkinitcpioHook(); err != nil {
 		return err
 	}
-	return regenerateInitramfs()
+	if err := regenerateInitramfs(); err != nil {
+		return err
+	}
+	installed = true
+	return nil
 }
 
 func UninstallPacmanHook() (bool, error) {
@@ -258,8 +274,12 @@ HELPEOF
 }
 
 func renderMkinitcpioRuntimeHook() string {
-	return `run_latehook() {
-    local cmdline entry boot_image name version newroot archive modules_parent target staging
+	rootModulesDir := filepath.Clean(RootModulesDir)
+	if !filepath.IsAbs(rootModulesDir) {
+		rootModulesDir = "/usr/lib/modules"
+	}
+	return fmt.Sprintf(`run_latehook() {
+    local cmdline entry boot_image name version root_modules_dir archive modules_parent target staging
 
     cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
     case " ${cmdline} " in
@@ -291,8 +311,9 @@ func renderMkinitcpioRuntimeHook() string {
 
     version="$(uname -r)"
     newroot="${newroot:-/new_root}"
+    root_modules_dir=%s
     archive="${newroot}/var/backups/bootrecov-snapshots/${name}/.bootrecov/root-modules/${version}.sqfs"
-    modules_parent="${newroot}/usr/lib/modules"
+    modules_parent="${newroot}${root_modules_dir}"
     target="${modules_parent}/${version}"
 
     [ ! -d "${target}" ] || return 0
@@ -330,7 +351,11 @@ func renderMkinitcpioRuntimeHook() string {
         rm -rf "${staging}"
     fi
 }
-`
+`, shellSingleQuote(rootModulesDir))
+}
+
+func shellSingleQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func enableMkinitcpioHook() error {
@@ -372,6 +397,60 @@ func disableMkinitcpioHook() (bool, error) {
 func backupMkinitcpioConf(data []byte) error {
 	backupPath := fmt.Sprintf("%s.bootrecov-%s", MkinitcpioConfPath, time.Now().UTC().Format("20060102-150405"))
 	return os.WriteFile(backupPath, data, 0o644)
+}
+
+type installPathSnapshot struct {
+	path    string
+	data    []byte
+	mode    os.FileMode
+	existed bool
+}
+
+func snapshotInstallPaths(paths []string) ([]installPathSnapshot, error) {
+	snapshots := make([]installPathSnapshot, 0, len(paths))
+	for _, path := range paths {
+		snapshot := installPathSnapshot{path: path}
+		info, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				snapshots = append(snapshots, snapshot)
+				continue
+			}
+			return nil, err
+		}
+		if info.IsDir() {
+			return nil, fmt.Errorf("refusing to overwrite directory: %s", path)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		snapshot.data = data
+		snapshot.mode = info.Mode().Perm()
+		snapshot.existed = true
+		snapshots = append(snapshots, snapshot)
+	}
+	return snapshots, nil
+}
+
+func restoreInstallPathSnapshots(snapshots []installPathSnapshot) error {
+	var errs []error
+	for _, snapshot := range snapshots {
+		if snapshot.existed {
+			if err := os.MkdirAll(filepath.Dir(snapshot.path), 0o755); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if err := os.WriteFile(snapshot.path, snapshot.data, snapshot.mode); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		if err := os.Remove(snapshot.path); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func updateMkinitcpioHooks(data []byte, enable bool) ([]byte, bool) {
@@ -912,7 +991,7 @@ func createSquashFSModuleImage(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return wrapFilesystemWriteError(dst, err)
 	}
-	cmd := exec.Command(MksquashfsBin, src, dst, "-comp", "zstd", "-Xcompression-level", "15", "-noappend")
+	cmd := exec.Command(MksquashfsBin, src, dst, "-comp", "zstd", "-Xcompression-level", "15", "-noappend", "-all-root")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		commandErr := fmt.Errorf("%w: mksquashfs: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
@@ -966,7 +1045,19 @@ func restoreSquashFSModuleTree(archivePath, moduleTreePath string) error {
 		return wrapFilesystemWriteError(moduleTreePath, err)
 	}
 	cleanupStaging = false
+	if err := chownTreeToRoot(moduleTreePath); err != nil {
+		return wrapFilesystemWriteError(moduleTreePath, err)
+	}
 	return nil
+}
+
+func chownTreeToRoot(root string) error {
+	return filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		return os.Lchown(path, 0, 0)
+	})
 }
 
 func currentRunningKernelVersion() string {

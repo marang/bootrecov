@@ -384,7 +384,7 @@ Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; th
 
 After the transaction, the post hook reconciles active Bootrecov entries. This restores archived module trees for already-active fallback kernels if the package update removed `/usr/lib/modules/<old-version>`, then refreshes EFI mirrors and bootloader state. Post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction.
 
-The mkinitcpio runtime hook is a second safety net. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. This path is Arch/mkinitcpio-specific; dracut and initramfs-tools need separate adapters and are not installed yet.
+The mkinitcpio runtime hook is a second safety net. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. The root module directory comes from Bootrecov's detected/configured `RootModulesDir` and defaults to `/usr/lib/modules`. This hook is Arch/mkinitcpio-specific; dracut and initramfs-tools need separate adapters and are not installed yet.
 
 ```mermaid
 flowchart TD
@@ -405,11 +405,11 @@ flowchart TD
     M --> L
     L --> O{"Later GRUB fallback boot still missing modules?"}
     O -->|No| P["Boot continues with matching modules"]
-    O -->|Yes| Q["mkinitcpio late hook extracts archived modules into /new_root/usr/lib/modules/<fallback-version>"]
+    O -->|Yes| Q["mkinitcpio late hook extracts archived modules into /new_root/<root-modules-dir>/<fallback-version>"]
     Q --> P
 ```
 
-The Arch package removal script also removes both pacman hook files and Bootrecov's mkinitcpio hook files when uninstalling `bootrecov`, so stale hooks do not remain pointed at a missing binary.
+The Arch package removal script removes both pacman hook files, Bootrecov's mkinitcpio hook files, the `bootrecov` token from `HOOKS=(...)`, and then regenerates initramfs images when `mkinitcpio` is available. Regeneration errors are printed as warnings so package removal is not blocked.
 
 Current trigger targets:
 

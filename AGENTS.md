@@ -132,7 +132,7 @@ Normal operation typically requires elevated privileges because the app writes t
 - `/etc/grub.d/41_bootrecov_snapshots`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` and `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook` on Arch
 - `/usr/lib/initcpio/install/bootrecov`, `/usr/lib/initcpio/hooks/bootrecov`, and `/etc/mkinitcpio.conf` on Arch/mkinitcpio
-  These hooks are created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package.
+  These hooks are created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package. Removal also drops `bootrecov` from `HOOKS=(...)` and regenerates initramfs images when `mkinitcpio` is available.
 
 Environment overrides:
 
@@ -196,7 +196,7 @@ Current Arch action:
 - if snapshot space is insufficient, the hook prints a warning and exits successfully so the package transaction is not blocked
 - non-space pre-transaction errors still fail the hook
 - post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction
-- mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/usr/lib/modules/<kernel-version>` only for Bootrecov GRUB fallback boots
+- mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/<configured-root-modules-dir>/<kernel-version>`, normally `/new_root/usr/lib/modules/<kernel-version>`, only for Bootrecov GRUB fallback boots
 - dracut and initramfs-tools boot-time restore adapters are planned but not implemented
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.

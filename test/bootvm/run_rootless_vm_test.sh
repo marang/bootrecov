@@ -746,8 +746,12 @@ if [[ ! -f "/usr/lib/modules/${PREV_VERSION}/modules.dep" ]]; then
   echo "[guest] previous-kernel activation did not restore /usr/lib/modules/${PREV_VERSION}" >&2
   exit 1
 fi
-if [[ ! -d "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" ]]; then
+if ! sudo test -d "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}"; then
   echo "[guest] previous-kernel activation did not create an EFI mirror" >&2
+  sudo cat /tmp/bootrecov-prev-activate.log || true
+  sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list || true
+  sudo find /boot/efi/bootrecov-snapshots -maxdepth 3 -mindepth 1 -print | sort || true
+  sudo find "${PREV_SNAPSHOT_DIR}" -maxdepth 3 -print | sort || true
   exit 1
 fi
 sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-deactivate.log 2>&1 || {
@@ -789,7 +793,7 @@ EOF
 echo "guest smoke test: done"
 
 set_status "extracting-entry-id"
-ENTRY_ID="$(awk -F= '/ADDED_ID=/{print $2}' test/bootvm/work/run.log | tail -n1 | tr -d '\r\n')"
+ENTRY_ID="$(awk -F= '/ADDED_ID=/{print $2}' "${RUN_LOG}" | tail -n1 | tr -d '\r\n')"
 if [[ -z "${ENTRY_ID}" ]]; then
   echo "failed to extract ADDED_ID from run log" >&2
   exit 1

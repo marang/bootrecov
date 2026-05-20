@@ -980,6 +980,31 @@ func TestUninstallPacmanHookIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestInstallPacmanHookRollsBackOnInitramfsFailure(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	UpdateInitramfs = true
+	MkinitcpioBin = filepath.Join(t.TempDir(), "mkinitcpio")
+	writeExecutable(t, MkinitcpioBin, "#!/bin/sh\nexit 1\n")
+
+	err := InstallPacmanHook("/usr/bin/bootrecov")
+	if !errors.Is(err, ErrCommandFailed) {
+		t.Fatalf("expected mkinitcpio command error, got %v", err)
+	}
+	for _, path := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
+		if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+			t.Fatalf("expected failed install to roll back %s, stat err=%v", path, statErr)
+		}
+	}
+	confData, readErr := os.ReadFile(MkinitcpioConfPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if strings.Contains(string(confData), "bootrecov") {
+		t.Fatalf("failed install should roll back mkinitcpio config: %s", string(confData))
+	}
+}
+
 func TestUpdateMkinitcpioHooksInsertsAfterFilesystems(t *testing.T) {
 	input := []byte("MODULES=()\nHOOKS=(base udev block filesystems keyboard fsck)\n")
 	got, changed := updateMkinitcpioHooks(input, true)
@@ -1017,6 +1042,51 @@ func TestUpdateMkinitcpioHooksRemovesOnlyBootrecov(t *testing.T) {
 	}
 }
 
+func TestRenderMkinitcpioRuntimeHookRestoresModulesOnFallbackBoot(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	RootModulesDir = "/custom/modules"
+	version := "6.6.7-arch1-1"
+	newRoot := filepath.Join(t.TempDir(), "new-root")
+	archive := filepath.Join(newRoot, "var", "backups", "bootrecov-snapshots", "snap", ".bootrecov", "root-modules", version+".sqfs")
+	writeFile(t, archive)
+	scriptPath := filepath.Join(t.TempDir(), "run-hook.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+set -eu
+cat() {
+  if [ "${1:-}" = "/proc/cmdline" ]; then
+    printf 'BOOT_IMAGE=/bootrecov-snapshots/snap/vmlinuz-linux bootrecov_entry=snap\n'
+    return 0
+  fi
+  command cat "$@"
+}
+uname() {
+  if [ "${1:-}" = "-r" ]; then
+    printf '%%s\n' %s
+    return 0
+  fi
+  command uname "$@"
+}
+unsquashfs() {
+  if [ "${1:-}" != "-d" ]; then
+    return 2
+  fi
+  mkdir -p "$2"
+  printf 'restored\n' >"$2/modules.dep"
+}
+newroot=%s
+%s
+run_latehook
+test -f "$newroot/custom/modules/%s/modules.dep"
+`, shellSingleQuote(version), shellSingleQuote(newRoot), renderMkinitcpioRuntimeHook(), version)
+	writeExecutable(t, scriptPath, script)
+
+	out, err := exec.Command("sh", scriptPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("runtime hook did not restore modules: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+}
+
 func TestRenderMkinitcpioRuntimeHookHasShellSyntax(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "bootrecov-hook")
 	if err := os.WriteFile(path, []byte(renderMkinitcpioRuntimeHook()), 0o644); err != nil {
@@ -1034,6 +1104,60 @@ func TestRenderMkinitcpioRuntimeHookHasShellSyntax(t *testing.T) {
 	}
 	if !checked {
 		t.Skip("no shell available for syntax check")
+	}
+}
+
+func TestCreateSquashFSModuleImageUsesAllRoot(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	src := filepath.Join(boot, "modules")
+	dst := filepath.Join(efi, "modules.sqfs")
+	writeFile(t, filepath.Join(src, "modules.dep"))
+	argLog := filepath.Join(t.TempDir(), "mksquashfs.args")
+	MksquashfsBin = filepath.Join(t.TempDir(), "mksquashfs")
+	writeExecutable(t, MksquashfsBin, fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$@\" >%s\n: >\"$2\"\n", shellSingleQuote(argLog)))
+
+	if err := createSquashFSModuleImage(src, dst); err != nil {
+		t.Fatalf("createSquashFSModuleImage failed: %v", err)
+	}
+	args, err := os.ReadFile(argLog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "-all-root\n") {
+		t.Fatalf("expected mksquashfs to receive -all-root, args:\n%s", string(args))
+	}
+}
+
+func TestChownTreeToRootSetsRestoredModuleOwnership(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("root privileges are required to verify restored module ownership")
+	}
+	root := filepath.Join(t.TempDir(), "modules", "6.6.7-arch1-1")
+	moduleFile := filepath.Join(root, "modules.dep")
+	writeFile(t, moduleFile)
+	if err := os.Chown(root, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chown(moduleFile, 65534, 65534); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := chownTreeToRoot(root); err != nil {
+		t.Fatalf("chownTreeToRoot failed: %v", err)
+	}
+	for _, path := range []string{root, moduleFile} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Fatalf("expected syscall.Stat_t for %s", path)
+		}
+		if stat.Uid != 0 || stat.Gid != 0 {
+			t.Fatalf("expected %s to be owned by root, got uid=%d gid=%d", path, stat.Uid, stat.Gid)
+		}
 	}
 }
 
