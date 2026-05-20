@@ -366,6 +366,26 @@ Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; th
 
 After the transaction, the post hook reconciles active Bootrecov entries. This restores archived module trees for already-active fallback kernels if the package update removed `/usr/lib/modules/<old-version>`, then refreshes EFI mirrors and bootloader state. Post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction.
 
+```mermaid
+flowchart TD
+    A["Kernel, GRUB, mkinitcpio, or systemd package transaction starts"] --> B["Pacman PreTransaction hook"]
+    B --> C["bootrecov hook backup-now"]
+    C --> D["Copy current /boot into /var/backups/bootrecov-snapshots/<name>"]
+    D --> E["Archive matching /usr/lib/modules/<kernel-version> as .bootrecov/root-modules/<kernel-version>.sqfs"]
+    E --> F["Package manager updates boot-critical packages"]
+    F --> G{"Did the update remove modules for an already-active fallback kernel?"}
+    G -->|No| H["Pacman PostTransaction hook"]
+    G -->|Yes| H
+    H --> I["bootrecov hook reconcile-active"]
+    I --> J["Find active Bootrecov GRUB entries"]
+    J --> K{"Matching /usr/lib/modules/<fallback-version> exists?"}
+    K -->|Yes| L["Refresh EFI mirror and GRUB state"]
+    K -->|No, archive exists| M["Restore modules from snapshot SquashFS into /usr/lib/modules/<fallback-version>"]
+    K -->|No archive| N["Warn and leave entry not boot-ready"]
+    M --> L
+    L --> O["Later GRUB fallback boot uses old kernel plus restored matching modules"]
+```
+
 The Arch package removal script also removes both pacman hook files when uninstalling `bootrecov`, so stale hooks do not remain pointed at a missing binary.
 
 Current trigger targets:
