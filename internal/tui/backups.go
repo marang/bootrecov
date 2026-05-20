@@ -223,6 +223,19 @@ func UninstallPacmanHook() (bool, error) {
 	return removed, nil
 }
 
+func HookInstalled() bool {
+	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
+		if !fileExists(hookPath) {
+			return false
+		}
+	}
+	data, err := os.ReadFile(MkinitcpioConfPath)
+	if err != nil {
+		return false
+	}
+	return mkinitcpioHookEnabled(data)
+}
+
 func renderPacmanPreHook(executablePath string) string {
 	return fmt.Sprintf(`[Trigger]
 Operation = Install
@@ -561,7 +574,7 @@ func regenerateInitramfs() error {
 		return fmt.Errorf("%w: mkinitcpio is required for initramfs regeneration but was not found in PATH", ErrRequiredToolUnavailable)
 	}
 	cmd := exec.Command(MkinitcpioBin, "-P")
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: mkinitcpio -P: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
 	}
@@ -992,7 +1005,7 @@ func createSquashFSModuleImage(src, dst string) error {
 		return wrapFilesystemWriteError(dst, err)
 	}
 	cmd := exec.Command(MksquashfsBin, src, dst, "-comp", "zstd", "-Xcompression-level", "15", "-noappend", "-all-root")
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {
 		commandErr := fmt.Errorf("%w: mksquashfs: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
 		return wrapExternalWriteFailure(dst, commandErr)
@@ -1033,7 +1046,7 @@ func restoreSquashFSModuleTree(archivePath, moduleTreePath string) error {
 	}()
 
 	cmd := exec.Command(UnsquashfsBin, "-d", staging, archivePath)
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {
 		commandErr := fmt.Errorf("%w: unsquashfs: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
 		return wrapExternalWriteFailure(moduleTreePath, commandErr)
@@ -1698,7 +1711,7 @@ func runRcloneSync(src, dst string, excludes, includes []string) error {
 	dstArg := dst + string(os.PathSeparator)
 	args := buildRcloneSyncArgs(srcArg, dstArg, excludes, includes, detectSupportedRcloneSyncFlags())
 	cmd := exec.Command(RcloneBin, args...)
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {
 		syncErr := fmt.Errorf("%w: rclone: %w: %s", ErrSyncFailed, err, strings.TrimSpace(string(out)))
 		return wrapExternalWriteFailure(dst, syncErr)

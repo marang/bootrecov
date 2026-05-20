@@ -364,7 +364,7 @@ func updateGrubConfig() error {
 		return fmt.Errorf("%w: grub config regeneration failed: %s not found in PATH", ErrRequiredToolUnavailable, GrubMkconfig)
 	}
 	cmd := exec.Command(GrubMkconfig, "-o", GrubCfgOutput)
-	out, err := cmd.CombinedOutput()
+	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: grub config regeneration: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))
 	}

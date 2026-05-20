@@ -7,10 +7,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func setupDirs(t *testing.T) (string, string, string, string) {
@@ -387,6 +389,107 @@ func writeExecutable(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRunCommandCombinedOutputStreamsCommandLines(t *testing.T) {
+	script := filepath.Join(t.TempDir(), "emit-lines")
+	writeExecutable(t, script, "#!/bin/sh\nprintf 'stdout line\\n'\nprintf 'stderr line\\n' >&2\n")
+	var got []string
+	var gotMu sync.Mutex
+	result := withCommandOutputSink(func(line string) {
+		gotMu.Lock()
+		defer gotMu.Unlock()
+		got = append(got, line)
+	}, func() struct {
+		out []byte
+		err error
+	} {
+		out, err := runCommandCombinedOutput(exec.Command(script))
+		return struct {
+			out []byte
+			err error
+		}{out: out, err: err}
+	})
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	outText := string(result.out)
+	for _, want := range []string{"stdout line", "stderr line"} {
+		if !strings.Contains(outText, want) {
+			t.Fatalf("expected combined output to contain %q, got %q", want, outText)
+		}
+		found := false
+		gotMu.Lock()
+		for _, line := range got {
+			if line == want {
+				found = true
+			}
+		}
+		gotMu.Unlock()
+		if !found {
+			gotMu.Lock()
+			lines := append([]string{}, got...)
+			gotMu.Unlock()
+			t.Fatalf("expected streamed line %q, got %#v", want, lines)
+		}
+	}
+}
+
+func drainModelCmd(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	if cmd == nil {
+		return m
+	}
+	msg := cmd()
+	switch msg := msg.(type) {
+	case tea.BatchMsg:
+		for _, batchCmd := range msg {
+			if batchCmd == nil {
+				continue
+			}
+			batchMsg := batchCmd()
+			if _, ok := batchMsg.(activityTickMsg); ok {
+				continue
+			}
+			if updated, next := m.Update(batchMsg); updated != nil {
+				m = updated.(Model)
+				if next != nil {
+					m = drainModelCmd(t, m, next)
+				}
+			}
+		}
+	case activityTickMsg:
+		return m
+	default:
+		if updated, next := m.Update(msg); updated != nil {
+			m = updated.(Model)
+			if next != nil {
+				m = drainModelCmd(t, m, next)
+			}
+		}
+	}
+	return m
+}
+
+func keyPress(s string) tea.KeyPressMsg {
+	switch s {
+	case "tab":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyTab})
+	case "esc":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyEsc})
+	case "up":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyUp})
+	case "down":
+		return tea.KeyPressMsg(tea.Key{Code: tea.KeyDown})
+	}
+	runes := []rune(s)
+	if len(runes) == 0 {
+		return tea.KeyPressMsg(tea.Key{})
+	}
+	if len(runes) == 1 {
+		return tea.KeyPressMsg(tea.Key{Text: s, Code: runes[0]})
+	}
+	return tea.KeyPressMsg(tea.Key{Code: runes[0]})
 }
 
 func setFreeBytes(t *testing.T, freeBytes int64) {
@@ -865,8 +968,9 @@ func TestModelShowsSyncHintAndSyncKeyRepairs(t *testing.T) {
 		t.Fatalf("expected activation hint, got status: %q", m.status)
 	}
 
-	if m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}}); m2 != nil {
+	if m2, cmd := m.Update(keyPress("s")); m2 != nil {
 		m = m2.(Model)
+		m = drainModelCmd(t, m, cmd)
 	}
 	if len(m.Backups) != 1 || !m.Backups[0].HasSnapshot || m.Backups[0].HasEFI || !m.Backups[0].InSync {
 		t.Fatalf("expected snapshot to remain unactivated after s reconcile: %#v", m.Backups)
@@ -880,8 +984,14 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
 
+	if HookInstalled() {
+		t.Fatal("hook should start uninstalled")
+	}
 	if err := InstallPacmanHook("/usr/bin/bootrecov"); err != nil {
 		t.Fatal(err)
+	}
+	if !HookInstalled() {
+		t.Fatal("hook should be detected after install")
 	}
 	preData, err := os.ReadFile(PacmanHookPath)
 	if err != nil {
@@ -929,6 +1039,230 @@ func TestInstallPacmanHookWritesExpectedCommand(t *testing.T) {
 	}
 	if !strings.Contains(string(confData), "filesystems bootrecov keyboard") {
 		t.Fatalf("expected bootrecov hook after filesystems in mkinitcpio config: %s", string(confData))
+	}
+}
+
+func TestModelShowsProgressWhileTaskRuns(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	writeFile(t, filepath.Join(boot, "vmlinuz"))
+	writeFile(t, filepath.Join(boot, "initrd.img"))
+
+	m, err := NewModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.status = "ready"
+	idleView := m.viewString()
+	idleLines := strings.Count(idleView, "\n")
+	updated, cmd := m.Update(keyPress("b"))
+	if updated == nil || cmd == nil {
+		t.Fatal("expected backup key to start an async task")
+	}
+	m = updated.(Model)
+	if !m.busy || m.task != taskBackup {
+		t.Fatalf("expected model to be busy creating backup, got %#v", m)
+	}
+	view := m.viewString()
+	if !strings.Contains(view, "creating snapshot and module archive") {
+		t.Fatalf("expected progress line in view:\n%s", view)
+	}
+	if strings.Count(view, "creating snapshot and module archive") != 1 {
+		t.Fatalf("expected task label only once in busy view:\n%s", view)
+	}
+	updated, _ = m.Update(taskOutputMsg{line: "rclone: Transferred: 622.9 MiB / 622.9 MiB", ok: true})
+	m = updated.(Model)
+	if !strings.Contains(m.viewString(), "rclone: Transferred") {
+		t.Fatalf("expected command output in task detail line:\n%s", m.viewString())
+	}
+	if busyLines := strings.Count(view, "\n"); busyLines != idleLines {
+		t.Fatalf("progress row should be reserved, idle lines=%d busy lines=%d\nidle:\n%s\nbusy:\n%s", idleLines, busyLines, idleView, view)
+	}
+	m = drainModelCmd(t, m, cmd)
+	if m.busy {
+		t.Fatal("expected task completion to clear busy state")
+	}
+	if len(m.Backups) != 1 {
+		t.Fatalf("expected created backup after draining task, got %#v", m.Backups)
+	}
+	completeView := m.viewString()
+	if strings.Count(completeView, "snapshot created") != 1 {
+		t.Fatalf("expected completion text once beside completed bar:\n%s", completeView)
+	}
+	if !strings.Contains(completeView, "━") {
+		t.Fatalf("expected completed status row to include filled activity bar:\n%s", completeView)
+	}
+}
+
+func TestModelDoesNotQuitWhileTaskRuns(t *testing.T) {
+	m := newModelComponents()
+	m.busy = true
+	m.task = taskInstallHook
+	m.taskLabel = "installing hooks and rebuilding initramfs (mkinitcpio -P)"
+	updated, cmd := m.Update(keyPress("q"))
+	if cmd != nil {
+		t.Fatal("busy q should not quit or start a command")
+	}
+	m = updated.(Model)
+	if !m.busy {
+		t.Fatal("busy q should keep operation running")
+	}
+	if !strings.Contains(m.viewString(), "operation is still running") {
+		t.Fatalf("expected wait warning in task detail:\n%s", m.viewString())
+	}
+	if strings.Contains(m.viewString(), "q quit") {
+		t.Fatalf("busy footer should not advertise quit:\n%s", m.viewString())
+	}
+}
+
+func TestModelHookKeyTogglesInstallAndUninstall(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	m, err := NewModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.viewString(), "install hook") || !strings.Contains(m.viewString(), "Hook: OFF") {
+		t.Fatalf("expected install hook footer before install:\n%s", m.viewString())
+	}
+
+	updated, cmd := m.Update(keyPress("p"))
+	if updated == nil || cmd == nil {
+		t.Fatal("expected hook key to start install task")
+	}
+	m = updated.(Model)
+	if !m.busy || !strings.Contains(m.viewString(), "mkinitcpio -P") || strings.Contains(m.viewString(), "can take a while") {
+		t.Fatalf("expected hook install to show initramfs rebuild progress:\n%s", m.viewString())
+	}
+	updated, _ = m.Update(taskOutputMsg{line: "==> Building image from preset: /etc/mkinitcpio.d/linux.preset", ok: true})
+	m = updated.(Model)
+	if !strings.Contains(m.viewString(), "Building image from preset") {
+		t.Fatalf("expected mkinitcpio output in task detail line:\n%s", m.viewString())
+	}
+	m = drainModelCmd(t, m, cmd)
+	if !HookInstalled() {
+		t.Fatal("expected hook to be installed after first toggle")
+	}
+	if !strings.Contains(m.viewString(), "uninstall hook") || !strings.Contains(m.viewString(), "Hook: ON") {
+		t.Fatalf("expected uninstall hook footer after install:\n%s", m.viewString())
+	}
+
+	updated, cmd = m.Update(keyPress("p"))
+	if updated == nil || cmd == nil {
+		t.Fatal("expected hook key to start uninstall task")
+	}
+	m = updated.(Model)
+	if !m.busy || !strings.Contains(m.viewString(), "mkinitcpio -P") || strings.Contains(m.viewString(), "can take a while") {
+		t.Fatalf("expected hook uninstall to show initramfs rebuild progress:\n%s", m.viewString())
+	}
+	m = drainModelCmd(t, m, cmd)
+	if HookInstalled() {
+		t.Fatal("expected hook to be uninstalled after second toggle")
+	}
+	if !strings.Contains(m.viewString(), "install hook") || !strings.Contains(m.viewString(), "Hook: OFF") {
+		t.Fatalf("expected install hook footer after uninstall:\n%s", m.viewString())
+	}
+}
+
+func TestModelHelpToggleAndTabViews(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	makeBootableBackup(t, snap, "pair")
+	makeBootableBackup(t, efi, "pair")
+	if err := AddGrubEntry(BootBackup{Name: "pair"}); err != nil {
+		t.Fatal(err)
+	}
+
+	m, err := NewModel()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(m.viewString(), "Backups") || !strings.Contains(m.viewString(), "Bootloader") {
+		t.Fatalf("expected tab labels in backup view:\n%s", m.viewString())
+	}
+	if !strings.Contains(m.viewString(), "delete") {
+		t.Fatalf("expected delete action in short help:\n%s", m.viewString())
+	}
+	if strings.Contains(m.viewString(), "recovery cmds") {
+		t.Fatalf("short help should not show full backup command set:\n%s", m.viewString())
+	}
+	updated, _ := m.Update(keyPress("?"))
+	m = updated.(Model)
+	if !m.help.ShowAll || !strings.Contains(m.viewString(), "recovery cmds") {
+		t.Fatalf("expected ? to show full help:\n%s", m.viewString())
+	}
+	updated, _ = m.Update(keyPress("tab"))
+	m = updated.(Model)
+	if m.mode != modeEntries || !m.entryTable.Focused() {
+		t.Fatalf("expected tab to focus bootloader entries, got mode=%v focused=%v", m.mode, m.entryTable.Focused())
+	}
+	if !strings.Contains(m.viewString(), "Bootloader Entries") || !strings.Contains(m.viewString(), "pair") {
+		t.Fatalf("expected bootloader table after tab:\n%s", m.viewString())
+	}
+}
+
+func TestModelUsesCompactComponentHeights(t *testing.T) {
+	if got := compactBackupListHeight(3, 60); got != 10 {
+		t.Fatalf("expected compact height for 3 backups, got %d", got)
+	}
+	if got := compactBackupListHeight(30, 60); got != 14 {
+		t.Fatalf("expected backup height cap, got %d", got)
+	}
+	if got := compactEntryTableHeight(2, 60); got != 4 {
+		t.Fatalf("expected compact table height for 2 entries, got %d", got)
+	}
+	if got := compactEntryTableHeight(30, 60); got != 10 {
+		t.Fatalf("expected table height cap, got %d", got)
+	}
+}
+
+func TestActivityBarSweepsLeftToRight(t *testing.T) {
+	first := activityBar(0, 16)
+	middle := activityBar(8, 16)
+	reset := activityBar(21, 16)
+	if first == middle {
+		t.Fatalf("activity bar should animate between frames:\n%s\n%s", first, middle)
+	}
+	if first != reset {
+		t.Fatalf("activity bar should restart after one left-to-right sweep:\nfirst: %s\nreset: %s", first, reset)
+	}
+	if strings.Contains(first, "█") || strings.Contains(middle, "█") {
+		t.Fatalf("activity bar should use quiet line glyphs, got:\n%s\n%s", first, middle)
+	}
+}
+
+func TestStatusActivityLineUsesCompletedBar(t *testing.T) {
+	m := newModelComponents()
+	m.width = 100
+	m = m.resizeComponents()
+	m.status = "snapshot created: test"
+	line := statusActivityLine(m)
+	if !strings.Contains(line, "snapshot created: test") {
+		t.Fatalf("expected status text beside completed bar: %q", line)
+	}
+	if got := lipgloss.Width(line); got != m.activityWidth {
+		t.Fatalf("expected status line to fill activity width %d, got %d: %q", m.activityWidth, got, line)
+	}
+	if !strings.Contains(line, "━") {
+		t.Fatalf("expected completed bar in status line: %q", line)
+	}
+	if strings.Contains(line, "\x1b[48;") {
+		t.Fatalf("status activity line should not use background color: %q", line)
+	}
+}
+
+func TestBusyActivityLineRightAlignsLabel(t *testing.T) {
+	m := newModelComponents()
+	m.width = 90
+	m = m.resizeComponents()
+	m.busy = true
+	m.taskLabel = "creating snapshot and module archive"
+	line := statusActivityLine(m)
+	if !strings.Contains(line, m.taskLabel) {
+		t.Fatalf("expected task label in activity line: %q", line)
+	}
+	if got := lipgloss.Width(line); got != m.activityWidth {
+		t.Fatalf("expected busy line to fill activity width %d, got %d: %q", m.activityWidth, got, line)
 	}
 }
 
@@ -1755,13 +2089,13 @@ func TestModelDeleteRequiresConfirmation(t *testing.T) {
 	if len(m.Backups) != 1 {
 		t.Fatalf("expected 1 backup, got %d", len(m.Backups))
 	}
-	if m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}}); m2 != nil {
+	if m2, _ := m.Update(keyPress("d")); m2 != nil {
 		m = m2.(Model)
 	}
 	if !m.confirmDelete || m.deleteTarget != "keep" {
 		t.Fatalf("expected delete confirmation state, got %#v", m)
 	}
-	if m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}}); m2 != nil {
+	if m2, _ := m.Update(keyPress("n")); m2 != nil {
 		m = m2.(Model)
 	}
 	if m.confirmDelete {
@@ -1770,11 +2104,15 @@ func TestModelDeleteRequiresConfirmation(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(snap, "keep")); err != nil {
 		t.Fatalf("backup should still exist after cancel: %v", err)
 	}
-	if m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}}); m2 != nil {
+	if m2, _ := m.Update(keyPress("d")); m2 != nil {
 		m = m2.(Model)
 	}
-	if m2, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}); m2 != nil {
+	if m2, cmd := m.Update(keyPress("y")); m2 != nil {
 		m = m2.(Model)
+		if !m.busy || m.task != taskDelete || !strings.Contains(m.viewString(), "deleting keep") {
+			t.Fatalf("expected delete progress state, got busy=%v task=%v view:\n%s", m.busy, m.task, m.viewString())
+		}
+		m = drainModelCmd(t, m, cmd)
 	}
 	if len(m.Backups) != 0 {
 		t.Fatalf("expected backup list empty after confirmed delete, got %#v", m.Backups)
