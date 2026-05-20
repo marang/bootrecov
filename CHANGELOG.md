@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.6 - 2026-05-20
+
+### Changed
+
+- Backup listings now distinguish restorable snapshots from incomplete snapshots.
+- CLI `backup list` now shows a `RESTORABLE` column for active snapshots that can restore archived modules before boot.
+
 ## v0.4.5 - 2026-05-15
 
 ### Changed

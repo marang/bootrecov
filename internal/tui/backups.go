@@ -511,6 +511,10 @@ func IsBootReady(b BootBackup) bool {
 	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && b.InSync && !hasKnownMissingRootModules(b)
 }
 
+func IsRestoreReady(b BootBackup) bool {
+	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && b.InSync && hasKnownMissingRootModules(b) && b.HasArchivedModules
+}
+
 func hasKnownMissingRootModules(b BootBackup) bool {
 	return b.RootModulesKnown && !b.HasRootModules
 }

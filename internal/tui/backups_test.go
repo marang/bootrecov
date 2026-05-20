@@ -1226,6 +1226,47 @@ func TestDiscoverBackupsDetectsMissingRootModuleTree(t *testing.T) {
 	}
 }
 
+func TestArchivedRootModulesAreRestoreReadyButNotBootReady(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	makeVersionedBootableBackup(t, snap, "old", version)
+	makeVersionedBootableBackup(t, efi, "old", version)
+	writeFile(t, archivedModuleImagePath(filepath.Join(snap, "old"), version))
+
+	backups, err := DiscoverBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(backups) != 1 {
+		t.Fatalf("expected 1 backup, got %d", len(backups))
+	}
+	b := backups[0]
+	if IsBootReady(b) {
+		t.Fatalf("archived modules should still require restore before boot-ready: %#v", b)
+	}
+	if !IsRestoreReady(b) {
+		t.Fatalf("archived modules should be restorable: %#v", b)
+	}
+}
+
+func TestStatusStringShowsRestoreForArchivedModules(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	makeVersionedBootableBackup(t, snap, "old", version)
+	makeVersionedBootableBackup(t, efi, "old", version)
+	writeFile(t, archivedModuleImagePath(filepath.Join(snap, "old"), version))
+
+	backups, err := DiscoverBackups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := statusString(backups[0]); got != "Restore" {
+		t.Fatalf("statusString=%q want Restore for archived modules", got)
+	}
+}
+
 func TestAddGrubEntryRejectsMissingRootModuleTree(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)

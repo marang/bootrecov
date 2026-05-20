@@ -308,10 +308,13 @@ func statusString(b BootBackup) string {
 	if !b.HasSnapshot {
 		return "Missing"
 	}
-	if hasKnownMissingRootModules(b) {
-		return "No modules"
-	}
 	if b.HasKernel && b.HasInitramfs {
+		if IsRestoreReady(b) {
+			return "Restore"
+		}
+		if hasKnownMissingRootModules(b) {
+			return "No modules"
+		}
 		return "OK"
 	}
 	return "Incomplete"
@@ -321,6 +324,8 @@ func statusBadge(b BootBackup) string {
 	switch statusString(b) {
 	case "OK":
 		return okStyle.Render("[OK]")
+	case "Restore":
+		return warnStyle.Render("[RESTORE]")
 	case "Missing":
 		return badStyle.Render("[MISSING]")
 	default:

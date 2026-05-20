@@ -263,7 +263,8 @@ bootrecov recovery-commands <snapshot-name>
 - `SNAPSHOT`: snapshot exists in `/var/backups/bootrecov-snapshots`
 - `EFI`: active EFI mirror exists
 - `BOOTLOADER`: Bootrecov bootloader entry exists
-- `BOOTABLE`: snapshot is complete, active, synced, and not missing known required modules
+- `BOOTABLE`: snapshot is complete, active, synced, and can boot without restoring archived modules first
+- `RESTORABLE`: snapshot is complete, active, synced, and can restore archived modules during activation/reconcile
 - `ROOT-MODULES`: `yes`, `missing`, `archived`, or `unknown`
 - `KERNEL`: detected kernel version
 

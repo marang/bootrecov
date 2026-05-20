@@ -291,16 +291,17 @@ func newBackupCmd() *cobra.Command {
 				}
 				_ = entries
 				tw := newTabWriter()
-				fmt.Fprintln(tw, "NAME\tSNAPSHOT\tEFI\tBOOTLOADER\tBOOTABLE\tROOT-MODULES\tCREATED\tSIZE\tKERNEL")
+				fmt.Fprintln(tw, "NAME\tSNAPSHOT\tEFI\tBOOTLOADER\tBOOTABLE\tRESTORABLE\tROOT-MODULES\tCREATED\tSIZE\tKERNEL")
 				for _, b := range backups {
 					fmt.Fprintf(
 						tw,
-						"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+						"%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 						b.Name,
 						boolWord(b.HasSnapshot),
 						boolWord(b.HasEFI),
 						boolWord(b.GrubEntryExists),
 						boolWord(isBootable(b)),
+						boolWord(isRestorable(b)),
 						rootModulesWord(b),
 						formatTime(b.CreatedAt),
 						formatBytesCLI(b.SizeBytes),
@@ -502,6 +503,10 @@ func boolWord(v bool) string {
 
 func isBootable(b tui.BootBackup) bool {
 	return tui.IsBootReady(b)
+}
+
+func isRestorable(b tui.BootBackup) bool {
+	return tui.IsRestoreReady(b)
 }
 
 func rootModulesWord(b tui.BootBackup) string {
