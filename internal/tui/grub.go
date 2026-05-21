@@ -21,8 +21,15 @@ func grubInitrdArgs(backupPath string, microcodes []string, initramfs string) st
 
 func grubVisiblePath(hostPath string) string {
 	clean := filepath.Clean(hostPath)
-	if mountPoint, err := findMountPoint(clean); err == nil && mountPoint != "" {
-		if rel, relErr := filepath.Rel(mountPoint, clean); relErr == nil {
+	if mount, err := findMountInfo(clean); err == nil && mount.mountPoint != "" {
+		if rel, relErr := filepath.Rel(filepath.Clean(mount.mountPoint), clean); relErr == nil {
+			mountRoot := filepath.Clean(mount.mountRoot)
+			if mountRoot != "." && mountRoot != string(os.PathSeparator) {
+				if rel == "." {
+					return "/" + strings.TrimPrefix(filepath.ToSlash(mountRoot), "/")
+				}
+				return "/" + strings.TrimPrefix(filepath.ToSlash(filepath.Join(mountRoot, rel)), "/")
+			}
 			if rel == "." {
 				return "/"
 			}
@@ -81,6 +88,9 @@ func AddGrubEntry(b BootBackup) error {
 	}
 	if exists {
 		return nil
+	}
+	if canUseBLSForBackup(canonical) {
+		return addBLSEntry(canonical)
 	}
 
 	if err := ensureGrubFile(); err != nil {
@@ -176,6 +186,9 @@ func RemoveGrubEntry(id string) error {
 	if err := ensureSupportedBootloader(); err != nil {
 		return err
 	}
+	if err := removeBLSEntry(id); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(GrubCustom)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -223,14 +236,17 @@ func ListGrubEntries() ([]GrubEntry, error) {
 	if err := ensureSupportedBootloader(); err != nil {
 		return nil, err
 	}
+	entries, err := listBLSEntries()
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(GrubCustom)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []GrubEntry{}, nil
+			return entries, nil
 		}
 		return nil, err
 	}
-	var entries []GrubEntry
 	scanner := bufio.NewScanner(bytes.NewReader(data))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())

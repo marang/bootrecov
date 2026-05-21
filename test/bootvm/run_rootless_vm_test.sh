@@ -50,9 +50,15 @@ case "${BOOTVM_SCENARIO}" in
     BASE_IMAGE_NAME="debian-12-genericcloud-amd64.qcow2"
     DEFAULT_IMAGE_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-amd64.qcow2"
     ;;
+	fedora-grub-bls)
+		EXPECTED_PLATFORM="fedora"
+		EXPECTED_HOOK_SUPPORTED="yes"
+		BASE_IMAGE_NAME="Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+		DEFAULT_IMAGE_URL="https://dl.fedoraproject.org/pub/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2"
+		;;
   *)
     echo "unsupported bootvm scenario: ${BOOTVM_SCENARIO}" >&2
-    echo "supported scenarios: ubuntu-grub, debian-grub" >&2
+    echo "supported scenarios: ubuntu-grub, debian-grub, fedora-grub-bls" >&2
     exit 2
     ;;
 esac
@@ -215,6 +221,12 @@ timestamp_stream() {
   while IFS= read -r line || [[ -n "${line}" ]]; do
     printf "%s %s\n" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "${line}"
   done
+}
+
+newer_go_file() {
+  local target="$1"
+  shift
+  find "$@" -name '*.go' -newer "${target}" -print -quit
 }
 
 port_in_use() {
@@ -434,12 +446,20 @@ if [[ ! -f "${PREPARED_MARKER}" ]]; then
   date -u +'%Y-%m-%dT%H:%M:%SZ' >"${PREPARED_MARKER}"
 fi
 
-if [[ ! -x "${BIN_PATH}" ]] || find "${ROOT_DIR}/cmd" "${ROOT_DIR}/internal" -name '*.go' -newer "${BIN_PATH}" -print -quit | grep -q .; then
+BIN_NEWER_GO=""
+if [[ -x "${BIN_PATH}" ]]; then
+  BIN_NEWER_GO="$(newer_go_file "${BIN_PATH}" "${ROOT_DIR}/cmd" "${ROOT_DIR}/internal")"
+fi
+if [[ ! -x "${BIN_PATH}" || -n "${BIN_NEWER_GO}" ]]; then
   set_status "building-binary"
   (cd "${ROOT_DIR}" && make build)
 fi
 
-if [[ ! -x "${SMOKE_BIN}" ]] || find "${ROOT_DIR}/test/bootvm" "${ROOT_DIR}/internal" -name '*.go' -newer "${SMOKE_BIN}" -print -quit | grep -q .; then
+SMOKE_NEWER_GO=""
+if [[ -x "${SMOKE_BIN}" ]]; then
+  SMOKE_NEWER_GO="$(newer_go_file "${SMOKE_BIN}" "${ROOT_DIR}/test/bootvm" "${ROOT_DIR}/internal")"
+fi
+if [[ ! -x "${SMOKE_BIN}" || -n "${SMOKE_NEWER_GO}" ]]; then
   set_status "building-guest-smoke-binary"
   (cd "${ROOT_DIR}" && GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o "${SMOKE_BIN}" ./test/bootvm/guest_smoke.go)
 fi
@@ -511,9 +531,14 @@ set_status "running-guest-smoke-test"
 echo "guest smoke test: begin"
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "EXPECTED_PLATFORM='${EXPECTED_PLATFORM}' EXPECTED_BOOTLOADER='${EXPECTED_BOOTLOADER}' EXPECTED_HOOK_SUPPORTED='${EXPECTED_HOOK_SUPPORTED}' bash -se" <<'EOF'
 set -euo pipefail
-BACKUP_DIR=/boot/efi/bootrecov-snapshots/2026-smoke
 SNAPSHOT_DIR=/var/backups/bootrecov-snapshots/2026-smoke
 GRUB_CUSTOM=/etc/grub.d/41_bootrecov_snapshots
+BOOTRECOV_ENV=(BOOTRECOV_ACCEPT_RISK=1)
+BOOTRECOV_MIRROR_ROOT=/boot/efi/bootrecov-snapshots
+if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+  BOOTRECOV_MIRROR_ROOT=/boot/bootrecov-snapshots
+fi
+BACKUP_DIR="${BOOTRECOV_MIRROR_ROOT}/2026-smoke"
 
 print_bootrecov_entries() {
   local file="$1"
@@ -588,14 +613,29 @@ fi
 if [[ -z "${INITRD_SRC}" || ! -f "${INITRD_SRC}" ]]; then
   INITRD_SRC="$(ls -1 /boot/initrd.img-* 2>/dev/null | head -n1 || true)"
 fi
+if [[ -z "${INITRD_SRC}" || ! -f "${INITRD_SRC}" ]]; then
+  INITRD_SRC="$(ls -1 /boot/initramfs-*.img 2>/dev/null | head -n1 || true)"
+fi
 if [[ -z "${KERNEL_SRC}" || -z "${INITRD_SRC}" ]]; then
   echo "[guest] failed to locate kernel/initrd sources" >&2
   exit 1
 fi
 echo "[guest] setup start"
 sudo chmod +x /tmp/bootrecov
-run_setup_step apt-update /tmp/bootrecov-apt-update.log sudo DEBIAN_FRONTEND=noninteractive apt-get update
-run_setup_step runtime-deps /tmp/bootrecov-runtime-deps.log sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends rclone squashfs-tools grub-common
+case "${EXPECTED_PLATFORM}" in
+  fedora)
+    PKG_MANAGER="$(command -v dnf5 || command -v dnf || true)"
+    if [[ -z "${PKG_MANAGER}" ]]; then
+      echo "[guest] failed to locate dnf/dnf5" >&2
+      exit 1
+    fi
+    run_setup_step runtime-deps /tmp/bootrecov-runtime-deps.log sudo "${PKG_MANAGER}" -y install rclone squashfs-tools grub2-tools grub2-tools-extra dracut libdnf5-plugin-actions
+    ;;
+  *)
+    run_setup_step apt-update /tmp/bootrecov-apt-update.log sudo DEBIAN_FRONTEND=noninteractive apt-get update
+    run_setup_step runtime-deps /tmp/bootrecov-runtime-deps.log sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends rclone squashfs-tools grub-common
+    ;;
+esac
 sudo mkdir -p /boot/grub
 sudo mkdir -p /etc/grub.d
 if [[ ! -f "${GRUB_CUSTOM}" ]]; then
@@ -605,7 +645,7 @@ sudo chmod 755 /etc/grub.d/41_bootrecov_snapshots
 echo "[guest] setup done"
 
 echo "[guest] verifying detected platform, bootloader, and hook policy"
-sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov doctor >/tmp/bootrecov-doctor.log
+sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov doctor >/tmp/bootrecov-doctor.log
 sudo cat /tmp/bootrecov-doctor.log | sed 's/^/[doctor] /'
 DOCTOR_PLATFORM="$(awk '$1 == "platform" {print $2}' /tmp/bootrecov-doctor.log)"
 DOCTOR_BOOTLOADER="$(awk '$1 == "bootloader" {print $2}' /tmp/bootrecov-doctor.log)"
@@ -623,7 +663,7 @@ if [[ "${DOCTOR_HOOK_SUPPORTED}" != "${EXPECTED_HOOK_SUPPORTED}" ]]; then
   exit 1
 fi
 if [[ "${EXPECTED_HOOK_SUPPORTED}" == "no" ]]; then
-  if sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov hook install >/tmp/bootrecov-hook-install.log 2>&1; then
+  if sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov hook install >/tmp/bootrecov-hook-install.log 2>&1; then
     echo "[guest] hook install unexpectedly succeeded on ${EXPECTED_PLATFORM}" >&2
     sudo cat /tmp/bootrecov-hook-install.log || true
     exit 1
@@ -633,10 +673,31 @@ if [[ "${EXPECTED_HOOK_SUPPORTED}" == "no" ]]; then
     exit 1
   fi
   echo "[guest] unsupported package hook install is safely rejected"
+else
+  echo "[guest] installing supported package-manager/initramfs hooks"
+  sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov hook install >/tmp/bootrecov-hook-install.log 2>&1 || {
+    echo "[guest] supported hook install failed on ${EXPECTED_PLATFORM}" >&2
+    sudo cat /tmp/bootrecov-hook-install.log || true
+    exit 1
+  }
+  sudo cat /tmp/bootrecov-hook-install.log || true
+  if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+    if [[ ! -f /usr/lib/dracut/modules.d/95bootrecov/module-setup.sh || ! -f /usr/lib/dracut/modules.d/95bootrecov/bootrecov-restore.sh ]]; then
+      echo "[guest] Fedora hook install did not create dracut module files" >&2
+      sudo find /usr/lib/dracut/modules.d -maxdepth 2 -name '*bootrecov*' -print || true
+      exit 1
+    fi
+    if [[ ! -f /etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions && ! -f /etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action ]]; then
+      echo "[guest] Fedora hook install did not create DNF action files" >&2
+      sudo find /etc/dnf -maxdepth 4 -name '*bootrecov*' -print || true
+      exit 1
+    fi
+    echo "[guest] Fedora DNF and dracut hooks installed"
+  fi
 fi
 
 echo "[guest] running real snapshot create for SquashFS module archive coverage"
-SNAP_NAME="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup create | tail -n1 | tr -d '\r\n')"
+SNAP_NAME="$(sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup create | tail -n1 | tr -d '\r\n')"
 if [[ -z "${SNAP_NAME}" ]]; then
   echo "[guest] bootrecov backup create did not return a snapshot name" >&2
   exit 1
@@ -658,26 +719,26 @@ fi
 echo "[guest] module SquashFS image created: ${MODULE_IMAGE}"
 
 echo "[guest] activating real snapshot and checking EFI excludes internal metadata"
-df -h /boot/efi | sed 's/^/[guest-efi-free-before-activate] /'
-sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${SNAP_NAME}" >/tmp/bootrecov-activate.log 2>&1 || {
+df -h "$(dirname "${BOOTRECOV_MIRROR_ROOT}")" | sed 's/^/[guest-mirror-free-before-activate] /'
+sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup activate "${SNAP_NAME}" >/tmp/bootrecov-activate.log 2>&1 || {
   echo "[guest] bootrecov backup activate failed"
   sudo cat /tmp/bootrecov-activate.log || true
   exit 1
 }
-EFI_STATE="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list | awk -v name="${SNAP_NAME}" '$1 == name {print $3}')"
+EFI_STATE="$(sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list | awk -v name="${SNAP_NAME}" '$1 == name {print $3}')"
 if [[ "${EFI_STATE}" != "yes" ]]; then
   echo "[guest] expected activated snapshot to show EFI=yes in backup list" >&2
-  sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list || true
+  sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list || true
   sudo cat /tmp/bootrecov-activate.log || true
   exit 1
 fi
-REAL_EFI_DIR="/boot/efi/bootrecov-snapshots/${SNAP_NAME}"
+REAL_EFI_DIR="${BOOTRECOV_MIRROR_ROOT}/${SNAP_NAME}"
 if ! wait_for_guest_path dir "${REAL_EFI_DIR}"; then
   echo "[guest] expected EFI mirror after activation: ${REAL_EFI_DIR}" >&2
-  sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list || true
+  sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list || true
   sudo cat /tmp/bootrecov-activate.log || true
   echo "[guest] current EFI mirror tree:"
-  sudo find /boot/efi -maxdepth 4 -type d -o -type f | sort | sed 's/^/[efi-tree] /' || true
+  sudo find "${BOOTRECOV_MIRROR_ROOT}" -maxdepth 4 -type d -o -type f | sort | sed 's/^/[mirror-tree] /' || true
   exit 1
 fi
 if [[ -e "${REAL_EFI_DIR}/.bootrecov" ]]; then
@@ -689,7 +750,7 @@ echo "[guest] EFI mirror excludes .bootrecov metadata"
 
 echo "[guest] checking post-transaction hook restores active fallback modules removed by package update"
 sudo rm -rf "/usr/lib/modules/${KERNEL_VERSION}"
-LIST_AFTER_MODULE_REMOVE="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list)"
+LIST_AFTER_MODULE_REMOVE="$(sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list)"
 printf '%s\n' "${LIST_AFTER_MODULE_REMOVE}" | sed 's/^/[backup-list-after-module-remove] /'
 BOOTABLE_AFTER_MODULE_REMOVE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $5}' <<<"${LIST_AFTER_MODULE_REMOVE}")"
 RESTORABLE_AFTER_MODULE_REMOVE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $6}' <<<"${LIST_AFTER_MODULE_REMOVE}")"
@@ -698,7 +759,7 @@ if [[ "${BOOTABLE_AFTER_MODULE_REMOVE}" != "no" || "${RESTORABLE_AFTER_MODULE_RE
   echo "[guest] expected active snapshot to become restorable but not bootable after module removal" >&2
   exit 1
 fi
-sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov hook reconcile-active >/tmp/bootrecov-hook-reconcile-active.log 2>&1 || {
+sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov hook reconcile-active >/tmp/bootrecov-hook-reconcile-active.log 2>&1 || {
   echo "[guest] bootrecov hook reconcile-active failed"
   sudo cat /tmp/bootrecov-hook-reconcile-active.log || true
   exit 1
@@ -708,7 +769,7 @@ if [[ ! -f "/usr/lib/modules/${KERNEL_VERSION}/modules.dep" ]]; then
   echo "[guest] post-transaction hook did not restore /usr/lib/modules/${KERNEL_VERSION}" >&2
   exit 1
 fi
-LIST_AFTER_HOOK_RESTORE="$(sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list)"
+LIST_AFTER_HOOK_RESTORE="$(sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list)"
 printf '%s\n' "${LIST_AFTER_HOOK_RESTORE}" | sed 's/^/[backup-list-after-hook-restore] /'
 BOOTABLE_AFTER_HOOK_RESTORE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $5}' <<<"${LIST_AFTER_HOOK_RESTORE}")"
 ROOT_MODULES_AFTER_HOOK_RESTORE="$(awk -v name="${SNAP_NAME}" '$1 == name {print $7}' <<<"${LIST_AFTER_HOOK_RESTORE}")"
@@ -718,26 +779,26 @@ if [[ "${BOOTABLE_AFTER_HOOK_RESTORE}" != "yes" || "${ROOT_MODULES_AFTER_HOOK_RE
 fi
 echo "[guest] post-transaction hook restored active fallback modules"
 
-sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${SNAP_NAME}" >/tmp/bootrecov-deactivate.log 2>&1 || {
+sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup deactivate "${SNAP_NAME}" >/tmp/bootrecov-deactivate.log 2>&1 || {
   echo "[guest] bootrecov backup deactivate failed"
   sudo cat /tmp/bootrecov-deactivate.log || true
   exit 1
 }
-df -h /boot/efi | sed 's/^/[guest-efi-free-after-deactivate] /'
+df -h "$(dirname "${BOOTRECOV_MIRROR_ROOT}")" | sed 's/^/[guest-mirror-free-after-deactivate] /'
 
 echo "[guest] checking archived previous-kernel module image restores during activation"
 PREV_VERSION="6.0.0-bootrecov-e2e"
 PREV_SNAPSHOT="2026-prev-kernel-archived-modules"
 PREV_SNAPSHOT_DIR="/var/backups/bootrecov-snapshots/${PREV_SNAPSHOT}"
 PREV_MODULE_SRC="/tmp/bootrecov-prev-modules"
-sudo rm -rf "${PREV_SNAPSHOT_DIR}" "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}" "/usr/lib/modules/${PREV_VERSION}" "${PREV_MODULE_SRC}"
+sudo rm -rf "${PREV_SNAPSHOT_DIR}" "${BOOTRECOV_MIRROR_ROOT}/${PREV_SNAPSHOT}" "/usr/lib/modules/${PREV_VERSION}" "${PREV_MODULE_SRC}"
 sudo mkdir -p "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules"
 sudo cp -f "${KERNEL_SRC}" "${PREV_SNAPSHOT_DIR}/vmlinuz-${PREV_VERSION}"
 sudo cp -f "${INITRD_SRC}" "${PREV_SNAPSHOT_DIR}/initrd.img-${PREV_VERSION}"
 sudo mkdir -p "${PREV_MODULE_SRC}"
 printf 'bootrecov previous module metadata\n' | sudo tee "${PREV_MODULE_SRC}/modules.dep" >/dev/null
 sudo mksquashfs "${PREV_MODULE_SRC}" "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules/${PREV_VERSION}.sqfs" -comp zstd -Xcompression-level 15 -noappend >/tmp/bootrecov-prev-mksquashfs.log 2>&1
-if ! sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
+if ! sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
   echo "[guest] activation failed for archived previous-kernel module tree" >&2
   sudo cat /tmp/bootrecov-prev-activate.log || true
   exit 1
@@ -746,15 +807,15 @@ if [[ ! -f "/usr/lib/modules/${PREV_VERSION}/modules.dep" ]]; then
   echo "[guest] previous-kernel activation did not restore /usr/lib/modules/${PREV_VERSION}" >&2
   exit 1
 fi
-if ! sudo test -d "/boot/efi/bootrecov-snapshots/${PREV_SNAPSHOT}"; then
+if ! sudo test -d "${BOOTRECOV_MIRROR_ROOT}/${PREV_SNAPSHOT}"; then
   echo "[guest] previous-kernel activation did not create an EFI mirror" >&2
   sudo cat /tmp/bootrecov-prev-activate.log || true
-  sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup list || true
-  sudo find /boot/efi/bootrecov-snapshots -maxdepth 3 -mindepth 1 -print | sort || true
+  sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list || true
+  sudo find "${BOOTRECOV_MIRROR_ROOT}" -maxdepth 3 -mindepth 1 -print | sort || true
   sudo find "${PREV_SNAPSHOT_DIR}" -maxdepth 3 -print | sort || true
   exit 1
 fi
-sudo env BOOTRECOV_ACCEPT_RISK=1 /tmp/bootrecov backup deactivate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-deactivate.log 2>&1 || {
+sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup deactivate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-deactivate.log 2>&1 || {
   echo "[guest] previous-kernel deactivate failed"
   sudo cat /tmp/bootrecov-prev-deactivate.log || true
   exit 1
@@ -775,7 +836,7 @@ print_bootrecov_entries "${GRUB_CUSTOM}" "grub-before"
 
 echo "[guest] running deterministic grub smoke helper"
 sudo chmod +x /tmp/guest_smoke
-if ! timeout 45s sudo /tmp/guest_smoke "${BACKUP_DIR}" vmlinuz initrd.img >/tmp/bootrecov-smoke.log 2>&1; then
+if ! timeout 45s sudo env "${BOOTRECOV_ENV[@]}" /tmp/guest_smoke "${BACKUP_DIR}" vmlinuz initrd.img >/tmp/bootrecov-smoke.log 2>&1; then
   rc=$?
   echo "[guest] smoke helper failed with exit ${rc}"
   sudo cat /tmp/bootrecov-smoke.log || true
@@ -787,7 +848,15 @@ echo "[guest] smoke helper finished"
 echo "[guest] grub after (bootrecov entries):"
 print_bootrecov_entries "${GRUB_CUSTOM}" "grub-after"
 
-sudo grep -q "bootrecov-" "${GRUB_CUSTOM}"
+if [[ "${EXPECTED_PLATFORM}" == "fedora" && -d /boot/loader/entries ]]; then
+  if sudo find /boot/loader/entries -maxdepth 1 -name 'bootrecov-*.conf' -print -quit | grep -q .; then
+    sudo find /boot/loader/entries -maxdepth 1 -name 'bootrecov-*.conf' -print -exec sed 's/^/[bls-entry] /' {} \;
+  else
+    sudo grep -q "bootrecov-" "${GRUB_CUSTOM}"
+  fi
+else
+  sudo grep -q "bootrecov-" "${GRUB_CUSTOM}"
+fi
 echo "[guest] grub entry check passed"
 EOF
 echo "guest smoke test: done"
@@ -801,21 +870,53 @@ fi
 echo "detected backup entry id: ${ENTRY_ID}"
 
 set_status "preparing-grub-reboot"
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "bash -se" <<EOF
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "EXPECTED_PLATFORM='${EXPECTED_PLATFORM}' ENTRY_ID='${ENTRY_ID}' bash -se" <<'EOF'
 set -euo pipefail
-if ! command -v grub-mkconfig >/dev/null 2>&1; then
+find_grub_tool() {
+  local name
+  for name in "$@"; do
+    if command -v "${name}" >/dev/null 2>&1; then
+      command -v "${name}"
+      return 0
+    fi
+    if [ -x "/usr/sbin/${name}" ]; then
+      printf '%s\n' "/usr/sbin/${name}"
+      return 0
+    fi
+    if [ -x "/sbin/${name}" ]; then
+      printf '%s\n' "/sbin/${name}"
+      return 0
+    fi
+  done
+  return 1
+}
+GRUB_MKCONFIG="$(find_grub_tool grub-mkconfig grub2-mkconfig || true)"
+GRUB_REBOOT="$(find_grub_tool grub-reboot grub2-reboot || true)"
+GRUB_EDITENV="$(find_grub_tool grub-editenv grub2-editenv || true)"
+if [[ -z "${GRUB_MKCONFIG}" && "${EXPECTED_PLATFORM}" != "fedora" ]]; then
   sudo DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=180 install -y --no-install-recommends grub-common >/tmp/bootrecov-grub.log 2>&1
+  GRUB_MKCONFIG="$(find_grub_tool grub-mkconfig grub2-mkconfig || true)"
+  GRUB_REBOOT="$(find_grub_tool grub-reboot grub2-reboot || true)"
+  GRUB_EDITENV="$(find_grub_tool grub-editenv grub2-editenv || true)"
 fi
-sudo grub-mkconfig -o /boot/grub/grub.cfg >/tmp/bootrecov-grubcfg.log 2>&1
-sudo grub-reboot '${ENTRY_ID}'
-sudo grub-editenv list | sed 's/^/[grubenv] /'
+if [[ -z "${GRUB_MKCONFIG}" || -z "${GRUB_REBOOT}" || -z "${GRUB_EDITENV}" ]]; then
+  echo "missing GRUB reboot tools: mkconfig=${GRUB_MKCONFIG} reboot=${GRUB_REBOOT} editenv=${GRUB_EDITENV}" >&2
+  exit 1
+fi
+GRUB_CFG="/boot/grub/grub.cfg"
+if [[ ! -d /boot/grub && -d /boot/grub2 ]]; then
+  GRUB_CFG="/boot/grub2/grub.cfg"
+fi
+sudo "${GRUB_MKCONFIG}" -o "${GRUB_CFG}" >/tmp/bootrecov-grubcfg.log 2>&1
+sudo "${GRUB_REBOOT}" "${ENTRY_ID}"
+sudo "${GRUB_EDITENV}" list | sed 's/^/[grubenv] /'
 echo "[grubcfg] bootrecov entry excerpt for ${ENTRY_ID}:"
 if ! sudo awk -v id="${ENTRY_ID}" '
-  index(\$0, "menuentry ") {show=0}
-  index(\$0, id) {show=1}
+  index($0, "menuentry ") {show=0}
+  index($0, id) {show=1}
   show {print}
   show && /^}/ {show=0}
-' /boot/grub/grub.cfg | sed 's/^/[grubcfg] /'; then
+' "${GRUB_CFG}" | sed 's/^/[grubcfg] /'; then
   echo "[grubcfg] <failed-to-read>"
 fi
 EOF
@@ -824,8 +925,8 @@ set_status "reboot-test-1"
 reboot_and_wait
 CMDLINE_1="$(ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "cat /proc/cmdline" | tr -d '\r')"
 echo "post-reboot #1 cmdline: ${CMDLINE_1}"
-if [[ "${CMDLINE_1}" != *"bootrecov_entry=${ENTRY_ID}"* ]]; then
-  echo "expected boot marker bootrecov_entry=${ENTRY_ID} not found after reboot #1" >&2
+if [[ "${CMDLINE_1}" != *"bootrecov_entry=${ENTRY_ID}"* && "${CMDLINE_1}" != *"/bootrecov-snapshots/2026-smoke/"* ]]; then
+  echo "expected boot marker bootrecov_entry=${ENTRY_ID} or bootrecov snapshot BOOT_IMAGE not found after reboot #1" >&2
   exit 1
 fi
 echo "reboot #1 verified: booted backup GRUB entry."
@@ -847,12 +948,12 @@ echo "corrupted primary kernel at ${KERNEL_SRC}"
 EOF
 
 set_status "reboot-test-2"
-ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "sudo grub-reboot '${ENTRY_ID}'" || true
+ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "GRUB_REBOOT=\"\$(command -v grub-reboot || command -v grub2-reboot || true)\"; [ -n \"\${GRUB_REBOOT}\" ] || [ ! -x /usr/sbin/grub-reboot ] || GRUB_REBOOT=/usr/sbin/grub-reboot; [ -n \"\${GRUB_REBOOT}\" ] && sudo \"\${GRUB_REBOOT}\" '${ENTRY_ID}'" || true
 reboot_and_wait
 CMDLINE_2="$(ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "cat /proc/cmdline" | tr -d '\r')"
 echo "post-reboot #2 cmdline: ${CMDLINE_2}"
-if [[ "${CMDLINE_2}" != *"bootrecov_entry=${ENTRY_ID}"* ]]; then
-  echo "expected boot marker bootrecov_entry=${ENTRY_ID} not found after reboot #2" >&2
+if [[ "${CMDLINE_2}" != *"bootrecov_entry=${ENTRY_ID}"* && "${CMDLINE_2}" != *"/bootrecov-snapshots/2026-smoke/"* ]]; then
+  echo "expected boot marker bootrecov_entry=${ENTRY_ID} or bootrecov snapshot BOOT_IMAGE not found after reboot #2" >&2
   exit 1
 fi
 echo "reboot #2 verified: backup entry boots even after primary kernel corruption."

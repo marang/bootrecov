@@ -123,6 +123,12 @@ func newDoctorCmd() *cobra.Command {
 			fmt.Fprintf(tw, "mkinitcpio-install-hook\t%s\n", info.Layout.MkinitcpioInstallHook)
 			fmt.Fprintf(tw, "mkinitcpio-runtime-hook\t%s\n", info.Layout.MkinitcpioRuntimeHook)
 			fmt.Fprintf(tw, "mkinitcpio-config\t%s\n", info.Layout.MkinitcpioConfig)
+			fmt.Fprintf(tw, "bls-entries-dir\t%s\n", info.Layout.BLSEntriesDir)
+			fmt.Fprintf(tw, "dnf5-actions-path\t%s\n", info.Layout.DNF5ActionsPath)
+			fmt.Fprintf(tw, "dnf4-pre-actions-path\t%s\n", info.Layout.DNF4PreActionsPath)
+			fmt.Fprintf(tw, "dnf4-post-actions-path\t%s\n", info.Layout.DNF4PostActionsPath)
+			fmt.Fprintf(tw, "dracut-module-dir\t%s\n", info.Layout.DracutModuleDir)
+			fmt.Fprintf(tw, "dracut-bin\t%s\n", info.Layout.DracutBin)
 			for _, warning := range info.Warnings {
 				fmt.Fprintf(tw, "warning\t%s\n", warning)
 			}
@@ -145,11 +151,10 @@ func newHookCmd() *cobra.Command {
 			if len(args) == 1 {
 				path = args[0]
 			}
-			if err := tui.InstallPacmanHook(path); err != nil {
+			if err := tui.InstallPlatformHooks(path); err != nil {
 				return err
 			}
-			fmt.Printf("installed package-manager hooks at %s and %s\n", tui.PacmanHookPath, tui.PacmanPostHookPath)
-			fmt.Printf("installed mkinitcpio boot restore hooks at %s and %s\n", tui.MkinitcpioInstallPath, tui.MkinitcpioHookPath)
+			fmt.Printf("installed platform package-manager and initramfs hooks\n")
 			return nil
 		},
 	}
@@ -158,15 +163,15 @@ func newHookCmd() *cobra.Command {
 		Short: "Remove the package-manager hook",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			removed, err := tui.UninstallPacmanHook()
+			removed, err := tui.UninstallPlatformHooks()
 			if err != nil {
 				return err
 			}
 			if removed {
-				fmt.Printf("removed package-manager hooks and mkinitcpio boot restore hooks\n")
+				fmt.Printf("removed platform package-manager and initramfs hooks\n")
 				return nil
 			}
-			fmt.Printf("package-manager hooks and mkinitcpio boot restore hooks are not installed\n")
+			fmt.Printf("platform package-manager and initramfs hooks are not installed\n")
 			return nil
 		},
 	}

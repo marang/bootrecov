@@ -11,29 +11,40 @@ import (
 )
 
 type mountInfoEntry struct {
+	mountRoot  string
 	mountPoint string
 	fsType     string
 }
 
 func findMountPoint(path string) (string, error) {
-	entries, err := readMountInfo()
+	entry, err := findMountInfo(path)
 	if err != nil {
 		return "", err
 	}
+	return entry.mountPoint, nil
+}
+
+func findMountInfo(path string) (mountInfoEntry, error) {
+	entries, err := readMountInfo()
+	if err != nil {
+		return mountInfoEntry{}, err
+	}
 
 	path = filepath.Clean(path)
-	best := ""
+	var best mountInfoEntry
+	bestLen := 0
 	for _, entry := range entries {
 		mountPoint := filepath.Clean(entry.mountPoint)
 		if path != mountPoint && !strings.HasPrefix(path, mountPoint+string(os.PathSeparator)) {
 			continue
 		}
-		if len(mountPoint) > len(best) {
-			best = mountPoint
+		if len(mountPoint) > bestLen {
+			best = entry
+			bestLen = len(mountPoint)
 		}
 	}
-	if best == "" {
-		return "", fmt.Errorf("%w: %s", ErrMountPointNotFound, path)
+	if bestLen == 0 {
+		return mountInfoEntry{}, fmt.Errorf("%w: %s", ErrMountPointNotFound, path)
 	}
 	return best, nil
 }
@@ -74,6 +85,7 @@ func parseMountInfoLine(line string) (mountInfoEntry, bool) {
 	}
 
 	return mountInfoEntry{
+		mountRoot:  decodeMountInfoPath(fields[3]),
 		mountPoint: decodeMountInfoPath(fields[4]),
 		fsType:     fsFields[0],
 	}, true

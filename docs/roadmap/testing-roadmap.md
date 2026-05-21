@@ -6,8 +6,9 @@ The current release gate is:
 
 - `make test`
 - `make test-bootvm`
+- `make test-bootvm-platform-matrix`
 
-The default rootless VM gate runs the `ubuntu-grub` scenario. `make test-bootvm-grub-matrix` runs explicit Ubuntu+GRUB and Debian+GRUB gates. The GRUB VM gates validate platform and bootloader detection, package-hook refusal where unsupported, SquashFS module archives, EFI mirror behavior, activation refusal for missing root modules, and reboot through a generated Bootrecov entry.
+The default rootless VM gate runs the `ubuntu-grub` scenario. `make test-bootvm-grub-matrix` runs explicit Ubuntu+GRUB and Debian+GRUB gates. `make test-bootvm-fedora-grub-bls` runs the Fedora-family GRUB/BLS gate, and `make test-bootvm-platform-matrix` runs all current GRUB platform gates. The GRUB VM gates validate platform and bootloader detection, package-hook refusal where unsupported, SquashFS module archives, active boot mirror behavior, activation refusal when root modules are missing without an archive, archived module restoration when an archive exists, and reboot through a generated Bootrecov entry. The Fedora gate also verifies DNF action hook installation, dracut restore module installation, BLS entry generation, and the Fedora `/boot/bootrecov-snapshots` mirror default.
 
 ## Next VM Gates
 
@@ -15,8 +16,8 @@ The default rootless VM gate runs the `ubuntu-grub` scenario. `make test-bootvm-
 | --- | --- | --- |
 | Arch + GRUB + EFI | Preserve current supported baseline | every release |
 | Ubuntu/Debian + GRUB + EFI | Prove non-Arch GRUB support | available as `make test-bootvm-grub-matrix`; mandatory before declaring Ubuntu/Debian fully supported |
+| Fedora-family + GRUB/BLS | Prove dracut/BLS compatibility | available as `make test-bootvm-fedora-grub-bls`; mandatory before promoting Fedora-family hook or BLS changes |
 | systemd-boot + EFI | Prove managed systemd-boot entries | enabling systemd-boot mutations |
-| Fedora-family + GRUB/BLS | Prove dracut/BLS compatibility | declaring Fedora-family support |
 
 ## Required Scenario Shape
 
@@ -24,7 +25,7 @@ Every mutating bootloader backend should test:
 
 - `doctor` detection output
 - snapshot creation
-- EFI mirror activation
+- active boot mirror activation
 - bootloader entry creation
 - reboot through the recovery entry
 - deactivation and cleanup
@@ -39,4 +40,4 @@ Keep these regression tests permanent:
 - ambiguous GRUB and systemd-boot signals are rejected
 - unsupported package-manager hooks fail clearly
 - risk acknowledgement blocks non-interactive commands unless explicitly accepted
-- internal `.bootrecov` metadata never reaches EFI mirrors
+- internal `.bootrecov` metadata never reaches active boot mirrors

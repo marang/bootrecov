@@ -2,7 +2,7 @@
 
 ## Current State
 
-Bootrecov currently has platform detection for Arch, Ubuntu, and Debian through `/etc/os-release`. Arch has pacman hook support. Ubuntu and Debian have explicit GRUB + EFI VM gate targets, and apt/dpkg hooks are intentionally not implemented yet.
+Bootrecov currently has platform detection for Arch, Fedora-family, Ubuntu, and Debian through `/etc/os-release`. Arch has pacman/mkinitcpio hook support. Fedora-family systems have DNF/dracut hook support, BLS-first GRUB entry support when the active mirror is on the same boot filesystem, a Fedora `/boot/bootrecov-snapshots` mirror default for BLS layouts, and an explicit Fedora GRUB/BLS VM gate. Ubuntu and Debian have explicit GRUB + EFI VM gate targets, and apt/dpkg hooks are intentionally not implemented yet.
 
 ## Priority 1: Ubuntu and Debian
 
@@ -21,7 +21,7 @@ Implementation direction:
 Out of scope for this phase:
 
 - automatic apt/dpkg hook installation
-- restoring or mounting `/usr/lib/modules`
+- apt/dpkg hooks and initramfs-tools boot-time restore
 - automatic fallback after failed boots
 
 Exit criteria:
@@ -34,19 +34,19 @@ Exit criteria:
 
 Goal:
 
-- add Fedora-family detection and a research-backed plan for GRUB/BLS and dracut-based systems.
+- harden Fedora-family GRUB/BLS and dracut-based systems with VM coverage.
 
 Implementation direction:
 
-- Detect Fedora, CentOS Stream, RHEL-compatible distributions, and ID_LIKE variants.
-- Treat dracut and BLS-style boot entries as first-class compatibility questions.
-- Start with `doctor`, detection tests, and non-mutating inspection.
-- Do not ship package-manager hooks in the first Fedora phase.
+- Keep DNF5/DNF4 action files and dracut module installation behind explicit `bootrecov hook install`.
+- Prefer BLS entries when they can reference the active mirror from the same boot filesystem; otherwise use the GRUB custom-entry backend. Fedora/BLS defaults active mirrors to `/boot/bootrecov-snapshots` unless the user explicitly overrides the mirror path.
+- Keep Fedora VM coverage mandatory before changing Fedora bootloader, DNF hook, or dracut behavior.
 
 Exit criteria:
 
 - Fedora-family platforms are detected accurately.
-- Mutating support remains blocked or experimental until a VM scenario exists.
+- Fedora GRUB/BLS VM scenario boots a generated Bootrecov recovery entry.
+- DNF/dracut hook installation is verified in VM; install and uninstall behavior is covered by unit tests.
 
 ## Later Distributions
 

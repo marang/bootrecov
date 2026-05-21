@@ -8,6 +8,7 @@ Every release must pass:
 - `make test`
 - `make test-bootvm`
 - `make test-bootvm-grub-matrix` before promoting Ubuntu/Debian GRUB support or changing platform/bootloader detection
+- `make test-bootvm-fedora-grub-bls` before promoting Fedora-family GRUB/BLS, DNF hook, or dracut restore changes
 - README, SAFETY, AGENTS, and roadmap support status aligned with actual behavior
 - no new mutating boot path without explicit risk acknowledgement
 

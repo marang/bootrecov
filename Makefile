@@ -5,7 +5,7 @@ GO_CACHE_DIR ?= /tmp/bootrecov-go-cache
 GO_MOD_CACHE_DIR ?= /tmp/bootrecov-go-mod-cache
 GO_ENV := GOCACHE=$(GO_CACHE_DIR) GOMODCACHE=$(GO_MOD_CACHE_DIR)
 
-.PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-ubuntu-grub test-bootvm-debian-grub test-bootvm-grub-matrix test-bootvm-watch
+.PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-ubuntu-grub test-bootvm-debian-grub test-bootvm-fedora-grub-bls test-bootvm-grub-matrix test-bootvm-platform-matrix test-bootvm-watch
 
 help:
 	@echo "Targets:"
@@ -19,7 +19,9 @@ help:
 	@echo "  make test-bootvm          Run rootless QEMU Ubuntu+GRUB boot test (auto-prepare + guest smoke test)"
 	@echo "  make test-bootvm-ubuntu-grub Run explicit Ubuntu+GRUB VM gate"
 	@echo "  make test-bootvm-debian-grub Run explicit Debian+GRUB VM gate"
+	@echo "  make test-bootvm-fedora-grub-bls Run explicit Fedora+GRUB/BLS VM gate"
 	@echo "  make test-bootvm-grub-matrix Run Ubuntu+GRUB and Debian+GRUB VM gates"
+	@echo "  make test-bootvm-platform-matrix Run Ubuntu, Debian, and Fedora GRUB gates"
 	@echo "  make test-bootvm-watch    Run tests, then open tmux dashboard for QEMU boot test"
 
 build:
@@ -56,7 +58,12 @@ test-bootvm-ubuntu-grub: test-bootvm-requirements
 test-bootvm-debian-grub: test-bootvm-requirements
 	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario debian-grub
 
+test-bootvm-fedora-grub-bls: test-bootvm-requirements
+	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario fedora-grub-bls
+
 test-bootvm-grub-matrix: test-bootvm-ubuntu-grub test-bootvm-debian-grub
+
+test-bootvm-platform-matrix: test-bootvm-grub-matrix test-bootvm-fedora-grub-bls
 
 test-bootvm-watch: test
 	$(GO_ENV) bash test/bootvm/watch_tmux.sh

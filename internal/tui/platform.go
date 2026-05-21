@@ -13,6 +13,7 @@ const (
 	PlatformArch    = "arch"
 	PlatformUbuntu  = "ubuntu"
 	PlatformDebian  = "debian"
+	PlatformFedora  = "fedora"
 	PlatformUnknown = "unknown"
 
 	BootloaderGRUB        = "grub"
@@ -40,6 +41,12 @@ type SystemLayout struct {
 	MkinitcpioInstallHook string
 	MkinitcpioRuntimeHook string
 	MkinitcpioConfig      string
+	BLSEntriesDir         string
+	DNF5ActionsPath       string
+	DNF4PreActionsPath    string
+	DNF4PostActionsPath   string
+	DracutModuleDir       string
+	DracutBin             string
 }
 
 type RuntimeEnvironment struct {
@@ -108,6 +115,27 @@ func ApplyEnvironmentOverridesFromEnv() {
 	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_MKINITCPIO_BIN")); v != "" {
 		MkinitcpioBin = v
 	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_GRUB_MKCONFIG")); v != "" {
+		GrubMkconfig = v
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_BLS_ENTRIES_DIR")); v != "" {
+		BLSEntriesDir = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DNF5_ACTIONS_PATH")); v != "" {
+		DNF5ActionsPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DNF4_PRE_ACTIONS_PATH")); v != "" {
+		DNF4PreActionsPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DNF4_POST_ACTIONS_PATH")); v != "" {
+		DNF4PostActionsPath = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DRACUT_MODULE_DIR")); v != "" {
+		DracutModuleDir = filepath.Clean(v)
+	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DRACUT_BIN")); v != "" {
+		DracutBin = v
+	}
 }
 
 func ConfigureDetectedEnvironment() RuntimeEnvironment {
@@ -116,7 +144,7 @@ func ConfigureDetectedEnvironment() RuntimeEnvironment {
 	activeWarnings = nil
 
 	platformID, platformName := detectPlatform()
-	bootloaderID, bootloaderName, bootloaderWarnings := detectBootloader()
+	bootloaderID, bootloaderName, bootloaderWarnings := detectBootloader(platformID)
 
 	activePlatformID = platformID
 	activePlatformName = platformName
@@ -167,6 +195,12 @@ func currentSystemLayout() SystemLayout {
 		MkinitcpioInstallHook: MkinitcpioInstallPath,
 		MkinitcpioRuntimeHook: MkinitcpioHookPath,
 		MkinitcpioConfig:      MkinitcpioConfPath,
+		BLSEntriesDir:         BLSEntriesDir,
+		DNF5ActionsPath:       DNF5ActionsPath,
+		DNF4PreActionsPath:    DNF4PreActionsPath,
+		DNF4PostActionsPath:   DNF4PostActionsPath,
+		DracutModuleDir:       DracutModuleDir,
+		DracutBin:             DracutBin,
 	}
 }
 
@@ -202,11 +236,17 @@ func ensurePlatformHookSupported() error {
 }
 
 func ensureInitramfsHookSupported() error {
-	if currentPlatformID() != PlatformArch {
+	switch currentPlatformID() {
+	case PlatformArch:
+		if !fileExists(MkinitcpioConfPath) {
+			return fmt.Errorf("%w: mkinitcpio config not found at %s", ErrUnsupportedInitramfsHook, MkinitcpioConfPath)
+		}
+	case PlatformFedora:
+		if strings.TrimSpace(DracutBin) == "" {
+			return fmt.Errorf("%w: dracut is required but not configured", ErrUnsupportedInitramfsHook)
+		}
+	default:
 		return fmt.Errorf("%w: boot-time module restore is not implemented for platform %q yet", ErrUnsupportedInitramfsHook, currentPlatformID())
-	}
-	if !fileExists(MkinitcpioConfPath) {
-		return fmt.Errorf("%w: mkinitcpio config not found at %s; dracut/initramfs-tools support is not implemented yet", ErrUnsupportedInitramfsHook, MkinitcpioConfPath)
 	}
 	return nil
 }
@@ -234,18 +274,21 @@ func detectPlatformFromOSRelease(values map[string]string) (string, string) {
 	if id == PlatformDebian || containsString(idLike, PlatformDebian) {
 		return PlatformDebian, valueOr(values["PRETTY_NAME"], "Debian")
 	}
+	if id == PlatformFedora || containsString(idLike, PlatformFedora) || containsString(idLike, "rhel") || containsString(idLike, "centos") {
+		return PlatformFedora, valueOr(values["PRETTY_NAME"], "Fedora Linux")
+	}
 	if id == "" {
 		return PlatformUnknown, valueOr(values["PRETTY_NAME"], "Unknown Linux")
 	}
 	return id, valueOr(values["PRETTY_NAME"], id)
 }
 
-func detectBootloader() (string, string, []string) {
+func detectBootloader(platformID string) (string, string, []string) {
 	if BootloaderOverride != "" {
 		id, name := bootloaderNameForID(BootloaderOverride)
 		return id, name, nil
 	}
-	hasSystemdBoot := systemdBootSignal()
+	hasSystemdBoot := systemdBootSignal(platformID)
 	hasStrongGRUB := strongGRUBSignal()
 	hasWeakGRUB := weakGRUBSignal()
 	if hasSystemdBoot && hasStrongGRUB {
@@ -275,9 +318,18 @@ func weakGRUBSignal() bool {
 	return fileExists(GrubDefaultPath)
 }
 
-func systemdBootSignal() bool {
+func systemdBootSignal(platformID string) bool {
 	espRoot := filepath.Dir(EfiDir)
-	return dirExists(filepath.Join(espRoot, "loader", "entries")) || fileExists(filepath.Join(espRoot, "loader", "loader.conf"))
+	if fileExists(filepath.Join(espRoot, "loader", "loader.conf")) {
+		return true
+	}
+	// Fedora and other RHEL-family GRUB+BLS systems also use loader/entries.
+	// Entries alone should remain a systemd-boot signal elsewhere, but not
+	// enough to reject a valid Fedora GRUB+BLS layout as ambiguous.
+	if platformID == PlatformFedora {
+		return false
+	}
+	return dirExists(filepath.Join(espRoot, "loader", "entries"))
 }
 
 func applyDetectedLayoutDefaults() {
@@ -328,6 +380,11 @@ func applyDetectedInitramfsDefaults() {
 			"/lib/initcpio/hooks",
 		}); detected != "" {
 			MkinitcpioHookPath = filepath.Join(detected, "bootrecov")
+		}
+	}
+	if !envConfigured("BOOTRECOV_DRACUT_BIN") && strings.TrimSpace(DracutBin) == "dracut" {
+		if detected, err := execLookPath("dracut"); err == nil && detected != "" {
+			DracutBin = detected
 		}
 	}
 }
@@ -479,6 +536,18 @@ func applyPlatformDefaults(platformID string) {
 			PacmanPostHookPath = "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook"
 		}
 		activeHookSupported = true
+	case PlatformFedora:
+		if !envConfigured("BOOTRECOV_ESP_DIR") && !envConfigured("BOOTRECOV_EFI_MIRROR_DIR") && dirExists(BLSEntriesDir) {
+			EfiDir = filepath.Join(BootDir, "bootrecov-snapshots")
+		}
+		if !envConfigured("BOOTRECOV_GRUB_MKCONFIG") && strings.TrimSpace(GrubMkconfig) == "grub-mkconfig" {
+			if detected, err := execLookPath("grub2-mkconfig"); err == nil && detected != "" {
+				GrubMkconfig = detected
+			} else {
+				GrubMkconfig = "grub2-mkconfig"
+			}
+		}
+		activeHookSupported = true
 	case PlatformUbuntu, PlatformDebian:
 		activeHookSupported = false
 	default:
@@ -502,7 +571,7 @@ func applyBootloaderDefaults(bootloaderID string) {
 }
 
 func platformSupportsHook(platformID string) bool {
-	return platformID == PlatformArch
+	return platformID == PlatformArch || platformID == PlatformFedora
 }
 
 func bootloaderSupported(bootloaderID string) bool {
@@ -514,6 +583,8 @@ func normalizePlatformID(id string) string {
 	switch id {
 	case "archlinux":
 		return PlatformArch
+	case "fedora", "rhel", "centos":
+		return PlatformFedora
 	case "ubuntu", "debian", "arch":
 		return id
 	default:
@@ -541,6 +612,8 @@ func platformNameForID(id string) (string, string) {
 		return PlatformUbuntu, "Ubuntu"
 	case PlatformDebian:
 		return PlatformDebian, "Debian"
+	case PlatformFedora:
+		return PlatformFedora, "Fedora Linux"
 	case "":
 		return PlatformUnknown, "Unknown Linux"
 	default:

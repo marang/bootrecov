@@ -20,27 +20,28 @@ The current application exposes both a Cobra CLI and a Bubble Tea TUI.
 Bootrecov keeps two related storage locations:
 
 - snapshot source: `/var/backups/bootrecov-snapshots/<name>`
-- optional EFI mirror for activated snapshots: `/boot/efi/bootrecov-snapshots/<name>`
+- optional active boot mirror for activated snapshots: usually `/boot/efi/bootrecov-snapshots/<name>`, or `/boot/bootrecov-snapshots/<name>` on Fedora/BLS layouts
 
 Important behavior:
 
 - new snapshots are created only in the snapshot source directory
-- EFI mirrors exist only for activated bootloader entries
+- active boot mirrors exist only for activated bootloader entries
 - snapshots contain `/boot` state plus an optional compressed SquashFS image of the matching `/usr/lib/modules/<kernel-version>` tree
 - module archives live under `.bootrecov/root-modules/<kernel-version>.sqfs` inside the snapshot source
-- module archives are not copied into EFI mirrors
+- module archives are not copied into active boot mirrors
 - activation restores an archived `/usr/lib/modules/<kernel-version>` tree automatically when the live root module tree is missing
 - activation must not overwrite an existing `/usr/lib/modules/<kernel-version>` tree
 - GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
+- Fedora-family GRUB/BLS systems use Bootrecov-owned BLS entries under `/boot/loader/entries` when the active mirror is on the same boot filesystem
 - GRUB config is regenerated with `grub-mkconfig -o /boot/grub/grub.cfg` after GRUB entry changes
-- runtime detection supports Arch and Ubuntu/Debian platforms
+- runtime detection supports Arch, Fedora-family, Ubuntu, and Debian platforms
 - boot and ESP path detection uses `/proc/self/mountinfo`, visible boot artifacts, and existing bootloader files while preserving explicit environment overrides
 - GRUB is the currently supported bootloader backend
 - systemd-boot is detected but not managed yet
-- Arch/pacman hooks are implemented; Ubuntu/Debian apt hooks are planned but not implemented
-- reconcile removes inactive EFI mirrors
+- Arch/pacman and Fedora/DNF hooks are implemented; Ubuntu/Debian apt hooks are planned but not implemented
+- reconcile removes inactive boot mirrors
 - reconcile removes entries for snapshots whose kernel version is known, whose matching root module tree is missing, and whose snapshot has no archived module tree to restore
-- reconcile preserves an already-bootable GRUB entry if refresh of its active EFI mirror fails transiently
+- reconcile preserves an already-bootable GRUB entry if refresh of its active boot mirror fails transiently
 
 ## Implemented Features
 
@@ -50,12 +51,13 @@ Important behavior:
 - Snapshot creation from `/boot`
 - Snapshot-side SquashFS archiving of matching root kernel modules when available
 - Root module tree compatibility checks and archived module restoration for activated kernel snapshots
-- EFI mirror activation and deactivation
-- GRUB entry add, remove, and parse
+- active boot mirror activation and deactivation
+- GRUB custom and Fedora/BLS entry add, remove, and parse
 - Platform and bootloader detection with environment overrides
 - Recovery command generation for activated snapshots
-- Pacman hook installation for pre-transaction snapshots and post-transaction active fallback reconciliation
+- Pacman and DNF hook installation for pre-transaction snapshots and post-transaction active fallback reconciliation
 - Arch/mkinitcpio boot-time module restore hook installation for self-restoring GRUB fallback boots
+- Fedora/dracut boot-time module restore hook installation for self-restoring GRUB fallback boots
 - Rootless QEMU integration test harness under `test/bootvm/`
 - Tagged release workflow via GoReleaser
 - Tagged AUR publish workflow using `PKGBUILD`
@@ -77,9 +79,9 @@ The binary currently supports:
 - `bootrecov grub list`
   Deprecated compatibility alias for `bootrecov bootloader list`.
 - `bootrecov reconcile`
-  Reconciles EFI mirrors and GRUB state.
+  Reconciles active boot mirrors and GRUB state.
 - `bootrecov hook install [absolute-binary-path]`
-  Installs or refreshes the platform package-manager hook. Currently implemented only for Arch/pacman.
+  Installs or refreshes the platform package-manager hook. Currently implemented for Arch/pacman and Fedora/DNF.
 - `bootrecov hook uninstall`
   Removes the platform package-manager hook when present.
 
@@ -99,7 +101,7 @@ Backups view:
 
 - `b`: create snapshot
 - `g`: toggle EFI + bootloader activation
-- `s`: reconcile EFI mirrors and GRUB state
+- `s`: reconcile active boot mirrors and GRUB state
 - `r`: show GRUB recovery commands for selected backup
 - `p`: install package-manager hook
 - `d`: delete selected backup, with confirmation
@@ -129,6 +131,8 @@ Normal operation typically requires elevated privileges because the app writes t
 
 - `/var/backups/bootrecov-snapshots`
 - `/boot/efi/bootrecov-snapshots`
+- `/boot/bootrecov-snapshots` on Fedora/BLS systems
+- `/usr/lib/modules/<kernel-version>` when restoring a missing archived module tree
 - `/etc/grub.d/41_bootrecov_snapshots`
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` and `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook` on Arch
 - `/usr/lib/initcpio/install/bootrecov`, `/usr/lib/initcpio/hooks/bootrecov`, and `/etc/mkinitcpio.conf` on Arch/mkinitcpio
@@ -136,7 +140,7 @@ Normal operation typically requires elevated privileges because the app writes t
 
 Environment overrides:
 
-- `BOOTRECOV_PLATFORM=arch|ubuntu|debian`
+- `BOOTRECOV_PLATFORM=arch|fedora|ubuntu|debian`
 - `BOOTRECOV_BOOTLOADER=grub|systemd-boot`
 - `BOOTRECOV_BOOT_DIR=/boot`
 - `BOOTRECOV_ESP_DIR=/boot/efi`
@@ -148,9 +152,17 @@ Environment overrides:
 - `BOOTRECOV_MKINITCPIO_INSTALL_HOOK=/usr/lib/initcpio/install/bootrecov`
 - `BOOTRECOV_MKINITCPIO_RUNTIME_HOOK=/usr/lib/initcpio/hooks/bootrecov`
 - `BOOTRECOV_MKINITCPIO_BIN=mkinitcpio`
+- `BOOTRECOV_GRUB_MKCONFIG=grub-mkconfig`
+- `BOOTRECOV_BLS_ENTRIES_DIR=/boot/loader/entries`
+- `BOOTRECOV_DNF5_ACTIONS_PATH=/etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions`
+- `BOOTRECOV_DNF4_PRE_ACTIONS_PATH=/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action`
+- `BOOTRECOV_DNF4_POST_ACTIONS_PATH=/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action`
+- `BOOTRECOV_DRACUT_MODULE_DIR=/usr/lib/dracut/modules.d/95bootrecov`
+- `BOOTRECOV_DRACUT_BIN=dracut`
 
-Path detection should handle common `/boot/efi`, `/efi`, and ESP-at-`/boot` layouts conservatively. Explicit environment overrides always take precedence.
+Path detection should handle common `/boot/efi`, `/efi`, and ESP-at-`/boot` layouts conservatively. Fedora-family BLS layouts should default active mirrors to `/boot/bootrecov-snapshots` when BLS entries are present and no explicit mirror override is set. Explicit environment overrides always take precedence.
 Arch/mkinitcpio hook path detection should use the `mkinitcpio` binary from `PATH`, existing mkinitcpio config, and existing initcpio hook directories before falling back to defaults. Do not apply Arch/mkinitcpio paths to other initramfs backends.
+Fedora-family hook installation uses DNF action plugin directories only when present, prefers DNF5 over DNF4 when both are installed, scopes actions to boot-critical package filters, and installs a dracut module for boot-time restore.
 If multiple bootloader signals are detected, report ambiguity and require/accept `BOOTRECOV_BOOTLOADER` to choose the intended backend instead of guessing.
 
 ## Backup Profiles
@@ -160,7 +172,7 @@ Environment variable:
 - `BOOTRECOV_BACKUP_PROFILE=full`
 - `BOOTRECOV_BACKUP_PROFILE=minimal`
 
-`full` copies the `/boot` tree while excluding the mounted ESP subtree such as `/boot/efi/**`, so firmware files are not duplicated into snapshots or active EFI mirrors.
+`full` copies the `/boot` tree while excluding the mounted ESP subtree such as `/boot/efi/**`, so firmware files are not duplicated into snapshots or active boot mirrors.
 
 `minimal` currently includes:
 
@@ -197,7 +209,7 @@ Current Arch action:
 - non-space pre-transaction errors still fail the hook
 - post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction
 - mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/<configured-root-modules-dir>/<kernel-version>`, normally `/new_root/usr/lib/modules/<kernel-version>`, only for Bootrecov GRUB fallback boots
-- dracut and initramfs-tools boot-time restore adapters are planned but not implemented
+- Fedora/dracut boot-time restore runs as a pre-pivot dracut hook after root is mounted at `/sysroot`; it recognizes either Bootrecov's kernel marker or a `BOOT_IMAGE` path under `bootrecov-snapshots`; initramfs-tools support is planned but not implemented
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.
 
@@ -237,7 +249,9 @@ make test-bootvm-requirements
 make test-bootvm
 make test-bootvm-ubuntu-grub
 make test-bootvm-debian-grub
+make test-bootvm-fedora-grub-bls
 make test-bootvm-grub-matrix
+make test-bootvm-platform-matrix
 make test-bootvm-watch
 ```
 

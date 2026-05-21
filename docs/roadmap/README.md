@@ -10,6 +10,7 @@ Bootrecov remains Linux-only and safety-first. A platform or bootloader is not c
 | --- | --- |
 | Arch Linux + GRUB + EFI | Supported |
 | Arch-based distributions + GRUB + EFI | Expected to work when paths and pacman hooks match Arch conventions |
+| Fedora/RHEL-family + GRUB + EFI | Fedora detection, BLS-first entries when usable, `/boot/bootrecov-snapshots` BLS mirror default, DNF hooks, dracut restore hooks, and dedicated VM gate available |
 | Ubuntu/Debian + GRUB + EFI | Dedicated VM gate available; apt/dpkg hooks not implemented |
 | systemd-boot | Detected and rejected for mutating operations |
 | rEFInd, Limine, UKI-only, Syslinux/extlinux, U-Boot | Not supported |
@@ -25,10 +26,10 @@ Bootrecov remains Linux-only and safety-first. A platform or bootloader is not c
 
 ## Delivery Order
 
-1. Run and harden the Ubuntu/Debian GRUB VM gates until they are part of every release.
+1. Keep the Ubuntu, Debian, and Fedora GRUB VM gates green as release gates.
 2. Design apt/dpkg hooks separately before enabling them.
 3. Implement systemd-boot entry management only after backend tests are ready.
-4. Add Fedora/RHEL-family detection and GRUB/BLS research.
+4. Keep Fedora/RHEL-family GRUB/BLS and dracut coverage release-gated as support expands.
 5. Add rEFInd and Limine design documents before mutating those bootloaders.
 6. Treat UKI-only / EFI stub support as a separate architecture track.
 

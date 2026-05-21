@@ -66,6 +66,12 @@ var (
 	MkinitcpioHookPath    = "/usr/lib/initcpio/hooks/bootrecov"
 	MkinitcpioConfPath    = "/etc/mkinitcpio.conf"
 	MkinitcpioBin         = "mkinitcpio"
+	BLSEntriesDir         = "/boot/loader/entries"
+	DNF5ActionsPath       = "/etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions"
+	DNF4PreActionsPath    = "/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action"
+	DNF4PostActionsPath   = "/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action"
+	DracutModuleDir       = "/usr/lib/dracut/modules.d/95bootrecov"
+	DracutBin             = "dracut"
 	UpdateInitramfs       = true
 	RcloneBin             = "rclone"
 	RequireRclone         = true
@@ -143,22 +149,70 @@ func CreateBootBackupNow() (BootBackup, error) {
 	return created, nil
 }
 
+func InstallPlatformHooks(executablePath string) error {
+	switch currentPlatformID() {
+	case PlatformArch:
+		return InstallPacmanHook(executablePath)
+	case PlatformFedora:
+		return installFedoraHooks(executablePath)
+	default:
+		return ensurePlatformHookSupported()
+	}
+}
+
+func UninstallPlatformHooks() (bool, error) {
+	switch currentPlatformID() {
+	case PlatformArch:
+		return UninstallPacmanHook()
+	case PlatformFedora:
+		return uninstallFedoraHooks()
+	default:
+		if err := ensurePlatformHookSupported(); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+}
+
+func PlatformHooksInstalled() bool {
+	switch currentPlatformID() {
+	case PlatformArch:
+		return HookInstalled()
+	case PlatformFedora:
+		return fedoraHooksInstalled()
+	default:
+		return false
+	}
+}
+
+func validateHookExecutablePath(executablePath string) (string, error) {
+	if strings.TrimSpace(executablePath) == "" {
+		executablePath = defaultHookExecutablePath()
+	}
+	executablePath = filepath.Clean(strings.TrimSpace(executablePath))
+	if !filepath.IsAbs(executablePath) {
+		return "", &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must be absolute"}
+	}
+	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
+		return "", &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must not contain whitespace"}
+	}
+	return executablePath, nil
+}
+
 func InstallPacmanHook(executablePath string) (err error) {
+	if currentPlatformID() != PlatformArch {
+		return fmt.Errorf("%w: pacman hook install is only supported on Arch; use bootrecov hook install for platform-specific hooks", ErrUnsupportedPackageHook)
+	}
 	if err := ensurePlatformHookSupported(); err != nil {
 		return err
 	}
 	if err := ensureInitramfsHookSupported(); err != nil {
 		return err
 	}
-	if strings.TrimSpace(executablePath) == "" {
-		executablePath = defaultHookExecutablePath()
-	}
-	executablePath = filepath.Clean(strings.TrimSpace(executablePath))
-	if !filepath.IsAbs(executablePath) {
-		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must be absolute"}
-	}
-	if strings.IndexFunc(executablePath, unicode.IsSpace) >= 0 {
-		return &HookExecutablePathError{Path: executablePath, Reason: "hook executable path must not contain whitespace"}
+	var pathErr error
+	executablePath, pathErr = validateHookExecutablePath(executablePath)
+	if pathErr != nil {
+		return pathErr
 	}
 	snapshots, err := snapshotInstallPaths([]string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath})
 	if err != nil {
@@ -200,6 +254,9 @@ func InstallPacmanHook(executablePath string) (err error) {
 }
 
 func UninstallPacmanHook() (bool, error) {
+	if currentPlatformID() != PlatformArch {
+		return false, fmt.Errorf("%w: pacman hook uninstall is only supported on Arch; use bootrecov hook uninstall for platform-specific hooks", ErrUnsupportedPackageHook)
+	}
 	removed := false
 	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
 		if err := os.Remove(hookPath); err != nil {
@@ -292,12 +349,12 @@ func renderMkinitcpioRuntimeHook() string {
 		rootModulesDir = "/usr/lib/modules"
 	}
 	return fmt.Sprintf(`run_latehook() {
-    local cmdline entry boot_image name version root_modules_dir archive modules_parent target staging
+    local cmdline entry boot_image has_marker name version root_modules_dir archive modules_parent target staging
 
     cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
+    has_marker=0
     case " ${cmdline} " in
-        *" bootrecov_entry="*) ;;
-        *) return 0 ;;
+        *" bootrecov_entry="*) has_marker=1 ;;
     esac
 
     for entry in ${cmdline}; do
@@ -314,7 +371,7 @@ func renderMkinitcpioRuntimeHook() string {
     done
 
     [ -n "${name}" ] || {
-        echo "bootrecov: fallback marker found but snapshot name could not be parsed" >&2
+        [ "${has_marker}" -eq 0 ] || echo "bootrecov: fallback marker found but snapshot name could not be parsed" >&2
         return 0
     }
 

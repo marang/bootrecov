@@ -17,14 +17,23 @@ This executes:
 - `go test -race ./...`
 - `go test -cover ./...`
 
-The unit tests cover snapshot discovery, GRUB entry generation and parsing, activation safety checks, invalid snapshot names, EFI mount verification, rclone flag detection, module archive behavior, and regression cases such as closing the custom GRUB file before `grub-mkconfig`.
+The unit tests cover snapshot discovery, GRUB/BLS entry generation and parsing, activation safety checks, invalid snapshot names, EFI mount verification, rclone flag detection, module archive behavior, Arch pacman/mkinitcpio hooks, Fedora DNF/dracut hooks, and regression cases such as closing the custom GRUB file before `grub-mkconfig`.
 
 ## Rootless VM Test
 
-Run:
+Run the default Ubuntu + GRUB gate:
 
 ```bash
 make test-bootvm
+```
+
+Run explicit platform gates:
+
+```bash
+make test-bootvm-ubuntu-grub
+make test-bootvm-debian-grub
+make test-bootvm-fedora-grub-bls
+make test-bootvm-platform-matrix
 ```
 
 Watch interactively:
@@ -33,19 +42,21 @@ Watch interactively:
 make test-bootvm-watch
 ```
 
-The VM harness uses QEMU, OVMF, cloud-init, and an Ubuntu cloud image to validate the boot path without requiring a privileged container or host reboot.
+The VM harness uses QEMU, OVMF, cloud-init, and cloud images to validate the boot path without requiring a privileged container or host reboot.
 
 The VM test verifies:
 
 - host dependency preflight
 - snapshot creation
 - compressed SquashFS archive creation for `/usr/lib/modules/<kernel-version>`
-- EFI mirror creation
-- exclusion of internal `.bootrecov` metadata from EFI
-- activation refusal for an old-kernel snapshot when `/usr/lib/modules/<version>` is missing
+- active boot mirror creation
+- exclusion of internal `.bootrecov` metadata from active boot mirrors
+- activation refusal when `/usr/lib/modules/<version>` is missing and no matching module archive exists
+- activation and post-transaction reconcile restore archived module trees when `/usr/lib/modules/<version>` is missing
 - GRUB entry generation and `grub.cfg` regeneration
 - booting through the Bootrecov GRUB entry
 - booting through the backup entry after corrupting the primary kernel
+- Fedora-family DNF/dracut hook installation, BLS entry generation, Btrfs `/boot` path handling, and generated recovery entry behavior in the Fedora gate
 
 Watch mode creates a `bootrecov-bootvm` tmux session:
 
@@ -66,6 +77,7 @@ Before a release, run at minimum:
 ```bash
 make test
 make test-bootvm
+make test-bootvm-platform-matrix
 ```
 
 For interactive inspection, prefer:

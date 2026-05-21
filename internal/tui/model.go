@@ -381,10 +381,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case key.Matches(msg, m.keys.Hook):
 			if m.mode == modeBackups {
-				if HookInstalled() {
-					return m.startTask(taskUninstallHook, "uninstalling hooks and rebuilding initramfs (mkinitcpio -P)", runHookToggleTask(taskUninstallHook))
+				if PlatformHooksInstalled() {
+					return m.startTask(taskUninstallHook, "uninstalling hooks and rebuilding initramfs", runHookToggleTask(taskUninstallHook))
 				}
-				return m.startTask(taskInstallHook, "installing hooks and rebuilding initramfs (mkinitcpio -P)", runHookToggleTask(taskInstallHook))
+				return m.startTask(taskInstallHook, "installing hooks and rebuilding initramfs", runHookToggleTask(taskInstallHook))
 			}
 		case key.Matches(msg, m.keys.Recovery):
 			if m.mode == modeBackups && len(m.Backups) > 0 {
@@ -659,7 +659,7 @@ func runHookToggleTask(kind taskKind) taskCmdFactory {
 	return func(output chan<- string) tea.Cmd {
 		return taskCmdWithOutput(output, func() tea.Msg {
 			if kind == taskUninstallHook {
-				removed, err := UninstallPacmanHook()
+				removed, err := UninstallPlatformHooks()
 				if err != nil {
 					return taskDoneMsg{task: kind, mode: modeBackups, errStatus: fmt.Sprintf("hook uninstall failed: %v", err)}
 				}
@@ -669,10 +669,10 @@ func runHookToggleTask(kind taskKind) taskCmdFactory {
 				}
 				return taskDoneMsg{task: kind, mode: modeBackups, status: status}
 			}
-			if err := InstallPacmanHook(defaultHookExecutablePath()); err != nil {
+			if err := InstallPlatformHooks(defaultHookExecutablePath()); err != nil {
 				return taskDoneMsg{task: kind, mode: modeBackups, errStatus: fmt.Sprintf("hook install failed: %v", err)}
 			}
-			return taskDoneMsg{task: kind, mode: modeBackups, status: fmt.Sprintf("package-manager and initramfs hooks installed: %s, %s", PacmanHookPath, MkinitcpioHookPath)}
+			return taskDoneMsg{task: kind, mode: modeBackups, status: "package-manager and initramfs hooks installed"}
 		})
 	}
 }
@@ -882,7 +882,7 @@ func (m Model) footer() string {
 
 func (m Model) viewHelpKeyMap() helpKeyMap {
 	hook := m.keys.Hook
-	if HookInstalled() {
+	if PlatformHooksInstalled() {
 		hook.SetHelp("p", "uninstall hook")
 	} else {
 		hook.SetHelp("p", "install hook")
@@ -907,7 +907,7 @@ func (m Model) viewHelpKeyMap() helpKeyMap {
 }
 
 func hookStateBadge() string {
-	if HookInstalled() {
+	if PlatformHooksInstalled() {
 		return okStyle.Render("Hook: ON")
 	}
 	return mutedStyle.Render("Hook: OFF")

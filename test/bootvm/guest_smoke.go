@@ -12,6 +12,8 @@ func main() {
 	if len(os.Args) != 4 {
 		log.Fatalf("usage: guest_smoke <backup-path> <kernel-image> <initramfs-image>")
 	}
+	tui.ApplyEnvironmentOverridesFromEnv()
+	tui.ConfigureDetectedEnvironment()
 	backupPath := os.Args[1]
 	kernelImage := os.Args[2]
 	initramfsImage := os.Args[3]

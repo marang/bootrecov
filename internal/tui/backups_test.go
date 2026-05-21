@@ -32,8 +32,8 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
-	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
+	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldBLSEntries, oldDNF5Actions, oldDNF4PreActions, oldDNF4PostActions, oldDracutModule, oldDracutBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, BLSEntriesDir, DNF5ActionsPath, DNF4PreActionsPath, DNF4PostActionsPath, DracutModuleDir, DracutBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
 	GrubCfgOutput = filepath.Join(filepath.Dir(grub), "grub.cfg")
 	GrubMkconfig = ""
@@ -45,6 +45,12 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	MkinitcpioHookPath = filepath.Join(filepath.Dir(grub), "initcpio", "hooks", "bootrecov")
 	MkinitcpioConfPath = filepath.Join(filepath.Dir(grub), "mkinitcpio.conf")
 	MkinitcpioBin = ""
+	BLSEntriesDir = filepath.Join(boot, "loader", "entries")
+	DNF5ActionsPath = filepath.Join(filepath.Dir(grub), "dnf5", "actions.d", "95-bootrecov.actions")
+	DNF4PreActionsPath = filepath.Join(filepath.Dir(grub), "dnf4", "pre-transaction-actions.d", "95-bootrecov.action")
+	DNF4PostActionsPath = filepath.Join(filepath.Dir(grub), "dnf4", "post-transaction-actions.d", "95-bootrecov.action")
+	DracutModuleDir = filepath.Join(filepath.Dir(grub), "dracut", "modules.d", "95bootrecov")
+	DracutBin = ""
 	UpdateInitramfs = false
 	RcloneBin = ""
 	RequireRclone = false
@@ -75,8 +81,8 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	activeWarnings = nil
 	writeFileWithContent(t, MkinitcpioConfPath, "HOOKS=(base udev autodetect modconf block filesystems keyboard fsck)\n")
 	t.Cleanup(func() {
-		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
-			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
+		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, BLSEntriesDir, DNF5ActionsPath, DNF4PreActionsPath, DNF4PostActionsPath, DracutModuleDir, DracutBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings =
+			oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldBLSEntries, oldDNF5Actions, oldDNF4PreActions, oldDNF4PostActions, oldDracutModule, oldDracutBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings
 	})
 }
 
@@ -112,6 +118,8 @@ func TestDetectPlatformFromOSRelease(t *testing.T) {
 		{name: "arch", data: "ID=arch\nPRETTY_NAME=\"Arch Linux\"\n", want: PlatformArch},
 		{name: "ubuntu", data: "ID=ubuntu\nID_LIKE=debian\nPRETTY_NAME=\"Ubuntu 24.04\"\n", want: PlatformUbuntu},
 		{name: "debian-like", data: "ID=pop\nID_LIKE=\"ubuntu debian\"\n", want: PlatformUbuntu},
+		{name: "fedora", data: "ID=fedora\nPRETTY_NAME=\"Fedora Linux 42\"\n", want: PlatformFedora},
+		{name: "rhel-like", data: "ID=rocky\nID_LIKE=\"rhel centos fedora\"\n", want: PlatformFedora},
 		{name: "unknown", data: "ID=void\n", want: "void"},
 	}
 	for _, tc := range cases {
@@ -142,6 +150,33 @@ func TestConfigureDetectedEnvironmentHonorsOverrides(t *testing.T) {
 	}
 }
 
+func TestConfigureDetectedEnvironmentDetectsFedoraDefaults(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	writeFileWithContent(t, OSReleasePath, "ID=fedora\nPRETTY_NAME=\"Fedora Linux 42\"\n")
+	if err := os.MkdirAll(BLSEntriesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	GrubMkconfig = "grub-mkconfig"
+	execLookPath = func(file string) (string, error) {
+		if file == "grub2-mkconfig" {
+			return filepath.Join(filepath.Dir(grub), "bin", "grub2-mkconfig"), nil
+		}
+		return exec.LookPath(file)
+	}
+
+	info := ConfigureDetectedEnvironment()
+	if info.PlatformID != PlatformFedora || !info.HookSupported {
+		t.Fatalf("expected Fedora with hook support, got %#v", info)
+	}
+	if GrubMkconfig != filepath.Join(filepath.Dir(grub), "bin", "grub2-mkconfig") {
+		t.Fatalf("expected Fedora grub2-mkconfig default, got %q", GrubMkconfig)
+	}
+	if EfiDir != filepath.Join(BootDir, "bootrecov-snapshots") {
+		t.Fatalf("expected Fedora BLS mirror on /boot, got %q", EfiDir)
+	}
+}
+
 func TestConfigureDetectedEnvironmentWarningsAreIdempotent(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
@@ -168,6 +203,9 @@ func TestApplyEnvironmentOverridesFromEnv(t *testing.T) {
 	t.Setenv("BOOTRECOV_BOOT_DIR", filepath.Join(filepath.Dir(boot), "custom-boot"))
 	t.Setenv("BOOTRECOV_ESP_DIR", espRoot)
 	t.Setenv("BOOTRECOV_BACKUP_PROFILE", "minimal")
+	t.Setenv("BOOTRECOV_BLS_ENTRIES_DIR", filepath.Join(filepath.Dir(boot), "bls"))
+	t.Setenv("BOOTRECOV_DNF5_ACTIONS_PATH", filepath.Join(filepath.Dir(boot), "dnf5.actions"))
+	t.Setenv("BOOTRECOV_DRACUT_BIN", "custom-dracut")
 
 	ApplyEnvironmentOverridesFromEnv()
 
@@ -185,6 +223,15 @@ func TestApplyEnvironmentOverridesFromEnv(t *testing.T) {
 	}
 	if BackupProfile != "minimal" {
 		t.Fatalf("backup profile=%q", BackupProfile)
+	}
+	if BLSEntriesDir != filepath.Join(filepath.Dir(boot), "bls") {
+		t.Fatalf("bls override=%q", BLSEntriesDir)
+	}
+	if DNF5ActionsPath != filepath.Join(filepath.Dir(boot), "dnf5.actions") {
+		t.Fatalf("dnf5 override=%q", DNF5ActionsPath)
+	}
+	if DracutBin != "custom-dracut" {
+		t.Fatalf("dracut override=%q", DracutBin)
 	}
 }
 
@@ -234,6 +281,7 @@ func TestConfigureDetectedEnvironmentDetectsSystemdBootUnsupported(t *testing.T)
 	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(filepath.Dir(efi), "loader", "loader.conf"))
 
 	info := ConfigureDetectedEnvironment()
 	if info.BootloaderID != BootloaderSystemdBoot {
@@ -244,12 +292,29 @@ func TestConfigureDetectedEnvironmentDetectsSystemdBootUnsupported(t *testing.T)
 	}
 }
 
+func TestConfigureDetectedEnvironmentDetectsSystemdBootEntriesOnlyUnsupported(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	info := ConfigureDetectedEnvironment()
+	if info.BootloaderID != BootloaderSystemdBoot {
+		t.Fatalf("expected entries-only systemd-boot detection, got %#v", info)
+	}
+	if info.BootloaderSupported {
+		t.Fatalf("systemd-boot should be detected but unsupported: %#v", info)
+	}
+}
+
 func TestConfigureDetectedEnvironmentPrefersSystemdBootOverWeakGRUBSignal(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
 	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(filepath.Dir(efi), "loader", "loader.conf"))
 	writeFile(t, GrubDefaultPath)
 
 	info := ConfigureDetectedEnvironment()
@@ -264,6 +329,7 @@ func TestConfigureDetectedEnvironmentRejectsAmbiguousBootloaderSignals(t *testin
 	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(filepath.Dir(efi), "loader", "loader.conf"))
 	writeFile(t, GrubCfgOutput)
 
 	info := ConfigureDetectedEnvironment()
@@ -281,6 +347,7 @@ func TestConfigureDetectedEnvironmentOverrideSelectsGrubWhenSignalsAreAmbiguous(
 	if err := os.MkdirAll(filepath.Join(filepath.Dir(efi), "loader", "entries"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeFile(t, filepath.Join(filepath.Dir(efi), "loader", "loader.conf"))
 	writeFile(t, GrubCfgOutput)
 	BootloaderOverride = BootloaderGRUB
 
@@ -292,6 +359,24 @@ func TestConfigureDetectedEnvironmentOverrideSelectsGrubWhenSignalsAreAmbiguous(
 		if strings.Contains(warning, "multiple bootloader signals") {
 			t.Fatalf("override should suppress ambiguity warning, got %#v", info.Warnings)
 		}
+	}
+}
+
+func TestConfigureDetectedEnvironmentTreatsBLSEntriesAloneAsGRUBBLS(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	writeFileWithContent(t, OSReleasePath, "ID=fedora\nPRETTY_NAME=\"Fedora Linux 42\"\n")
+	if err := os.MkdirAll(BLSEntriesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, GrubCfgOutput)
+
+	info := ConfigureDetectedEnvironment()
+	if info.BootloaderID != BootloaderGRUB || !info.BootloaderSupported {
+		t.Fatalf("expected GRUB+BLS detection when loader entries exist without loader.conf, got %#v", info)
+	}
+	if strings.Contains(strings.Join(info.Warnings, "\n"), "multiple bootloader signals") {
+		t.Fatalf("BLS entries alone should not create systemd-boot ambiguity, got %#v", info.Warnings)
 	}
 }
 
@@ -1131,7 +1216,7 @@ func TestModelHookKeyTogglesInstallAndUninstall(t *testing.T) {
 		t.Fatal("expected hook key to start install task")
 	}
 	m = updated.(Model)
-	if !m.busy || !strings.Contains(m.viewString(), "mkinitcpio -P") || strings.Contains(m.viewString(), "can take a while") {
+	if !m.busy || !strings.Contains(m.viewString(), "rebuilding initramfs") || strings.Contains(m.viewString(), "can take a while") {
 		t.Fatalf("expected hook install to show initramfs rebuild progress:\n%s", m.viewString())
 	}
 	updated, _ = m.Update(taskOutputMsg{line: "==> Building image from preset: /etc/mkinitcpio.d/linux.preset", ok: true})
@@ -1152,7 +1237,7 @@ func TestModelHookKeyTogglesInstallAndUninstall(t *testing.T) {
 		t.Fatal("expected hook key to start uninstall task")
 	}
 	m = updated.(Model)
-	if !m.busy || !strings.Contains(m.viewString(), "mkinitcpio -P") || strings.Contains(m.viewString(), "can take a while") {
+	if !m.busy || !strings.Contains(m.viewString(), "rebuilding initramfs") || strings.Contains(m.viewString(), "can take a while") {
 		t.Fatalf("expected hook uninstall to show initramfs rebuild progress:\n%s", m.viewString())
 	}
 	m = drainModelCmd(t, m, cmd)
@@ -1598,6 +1683,117 @@ func TestInstallPacmanHookRejectsArchWithoutMkinitcpioConfig(t *testing.T) {
 	}
 }
 
+func TestInstallFedoraHooksWritesDNFAndDracutFiles(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	activePlatformID = PlatformFedora
+	activePlatformName = "Fedora Linux"
+	activeHookSupported = true
+	DracutBin = "dracut"
+	for _, dir := range []string{
+		filepath.Dir(DNF5ActionsPath),
+		filepath.Dir(DNF4PreActionsPath),
+		filepath.Dir(DNF4PostActionsPath),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := InstallPlatformHooks("/usr/bin/bootrecov"); err != nil {
+		t.Fatal(err)
+	}
+	if !PlatformHooksInstalled() {
+		t.Fatal("expected Fedora hooks to be installed")
+	}
+	checks := map[string][]string{
+		DNF5ActionsPath: {"pre_transaction:kernel*:::/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now", "post_transaction:kernel*:::/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook reconcile-active", "pre_transaction:grub*:::"},
+		filepath.Join(DracutModuleDir, "module-setup.sh"):      {"inst_hook pre-pivot 95"},
+		filepath.Join(DracutModuleDir, "bootrecov-restore.sh"): {"bootrecov_entry=", "/sysroot", "unsquashfs -d"},
+	}
+	for path, wants := range checks {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("expected %s: %v", path, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("expected %s to contain %q:\n%s", path, want, string(data))
+			}
+		}
+	}
+	if fileExists(DNF4PreActionsPath) || fileExists(DNF4PostActionsPath) {
+		t.Fatalf("DNF5 should be preferred without also installing DNF4 action files")
+	}
+
+	removed, err := UninstallPlatformHooks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !removed {
+		t.Fatal("expected Fedora hook uninstall to remove files")
+	}
+	if PlatformHooksInstalled() {
+		t.Fatal("expected Fedora hooks to be uninstalled")
+	}
+}
+
+func TestInstallFedoraHooksUsesDNF4WhenDNF5IsUnavailable(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	activePlatformID = PlatformFedora
+	activePlatformName = "Fedora Linux"
+	activeHookSupported = true
+	DracutBin = "dracut"
+	for _, dir := range []string{
+		filepath.Dir(DNF4PreActionsPath),
+		filepath.Dir(DNF4PostActionsPath),
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := InstallPlatformHooks("/usr/bin/bootrecov"); err != nil {
+		t.Fatal(err)
+	}
+	if !PlatformHooksInstalled() {
+		t.Fatal("expected Fedora hooks to be installed through DNF4 fallback")
+	}
+	checks := map[string][]string{
+		DNF4PreActionsPath:  {"kernel*:any:/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now", "grub*:any:"},
+		DNF4PostActionsPath: {"kernel*:any:/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook reconcile-active", "dracut*:any:"},
+	}
+	for path, wants := range checks {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("expected %s: %v", path, err)
+		}
+		for _, want := range wants {
+			if !strings.Contains(string(data), want) {
+				t.Fatalf("expected %s to contain %q:\n%s", path, want, string(data))
+			}
+		}
+	}
+	if fileExists(DNF5ActionsPath) {
+		t.Fatalf("DNF5 action file should not be created when its plugin directory is absent")
+	}
+}
+
+func TestInstallFedoraHooksRequiresDNFActionPluginDirectory(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	activePlatformID = PlatformFedora
+	activePlatformName = "Fedora Linux"
+	activeHookSupported = true
+	DracutBin = "dracut"
+
+	err := InstallPlatformHooks("/usr/bin/bootrecov")
+	if !errors.Is(err, ErrUnsupportedPackageHook) {
+		t.Fatalf("expected unsupported package hook error, got %v", err)
+	}
+}
+
 func TestInstallPacmanHookRejectsMkinitcpioConfigWithoutHooksLine(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
@@ -1794,6 +1990,19 @@ func TestGrubVisiblePathStripsBootMountPrefix(t *testing.T) {
 	}
 }
 
+func TestGrubVisiblePathKeepsBtrfsMountRoot(t *testing.T) {
+	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+	if err := os.WriteFile(mountInfoPath, []byte("35 25 0:31 /boot /boot rw,relatime - btrfs /dev/vda3 rw\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got := grubVisiblePath("/boot/bootrecov-snapshots/snap/vmlinuz")
+	want := "/boot/bootrecov-snapshots/snap/vmlinuz"
+	if got != want {
+		t.Fatalf("grubVisiblePath btrfs boot=%q want %q", got, want)
+	}
+}
+
 func TestGrubVisiblePathUsesDeepestMountPoint(t *testing.T) {
 	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
 	content := strings.Join([]string{
@@ -1847,6 +2056,53 @@ func TestAddGrubEntryUsesGrubVisibleBootPaths(t *testing.T) {
 	wantInitrd := "initrd /pair/initrd.img"
 	if !strings.Contains(text, wantInitrd) {
 		t.Fatalf("expected grub-visible initrd path %q, got: %s", wantInitrd, text)
+	}
+}
+
+func TestAddGrubEntryPrefersFedoraBLSWhenUsable(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	activePlatformID = PlatformFedora
+	activePlatformName = "Fedora Linux"
+	activeHookSupported = true
+	if err := os.MkdirAll(BLSEntriesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	makeBootableBackup(t, snap, "pair")
+	makeBootableBackup(t, efi, "pair")
+
+	if err := AddGrubEntry(BootBackup{Name: "pair"}); err != nil {
+		t.Fatal(err)
+	}
+	id := backupIDForName("pair")
+	blsPath := blsEntryPath(id)
+	data, err := os.ReadFile(blsPath)
+	if err != nil {
+		t.Fatalf("expected BLS entry: %v", err)
+	}
+	text := string(data)
+	for _, want := range []string{
+		"title Bootrecov " + filepath.Join(efi, "pair"),
+		"linux " + blsVisiblePath(filepath.Join(efi, "pair", "vmlinuz")),
+		"initrd " + blsVisiblePath(filepath.Join(efi, "pair", "initrd.img")),
+		"options $kernelopts bootrecov_entry=" + id,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("expected BLS entry to contain %q:\n%s", want, text)
+		}
+	}
+	entries, err := ListGrubEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].ID != id || entries[0].Name != "pair" {
+		t.Fatalf("unexpected BLS entries: %#v", entries)
+	}
+	if err := RemoveGrubEntry(id); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(blsPath); !os.IsNotExist(err) {
+		t.Fatalf("expected BLS entry removal, err=%v", err)
 	}
 }
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Fedora/RHEL-family detection with Fedora-specific hook paths in `doctor`.
+- Fedora DNF5/DNF4 action hook installation and Fedora dracut boot-time module restore hook installation.
+- Fedora/BLS Bootrecov entries are preferred when the active snapshot mirror is on the same boot filesystem.
+- Fedora GRUB/BLS rootless VM gate with DNF/dracut, BLS, and reboot coverage.
+- README installation notes for the Arch/AUR `yay -S bootrecov` flow.
+
+### Fixed
+
+- Fedora/BLS entries now keep Btrfs `/boot` mount-root paths visible to GRUB.
+- Fedora/BLS systems now default active mirrors to `/boot/bootrecov-snapshots` without requiring a VM-only override.
+- Fedora DNF action hooks are now scoped to boot-critical package filters and prefer DNF5 over DNF4 when both plugin layouts exist.
+- Entries-only systemd-boot detection is preserved on non-Fedora systems while Fedora GRUB/BLS entries no longer create false ambiguity.
+- The rootless VM harness no longer exits early under `set -euo pipefail` when cached build artifacts are already current.
+- Fedora dracut restore now recognizes Bootrecov fallback boots from `BOOT_IMAGE` paths when GRUB/BLS does not preserve custom kernel markers.
+- Debian VM gate now finds GRUB tools installed under `/usr/sbin` in non-login SSH commands.
+
 ## v0.4.6 - 2026-05-20
 
 ### Changed
