@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -31,6 +33,10 @@ var (
 	riskPromptStyle                = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("214")).Padding(0, 1)
 	riskTitleStyle                 = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
 	riskMutedStyle                 = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	doctorOKStyle                  = lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Bold(true)
+	doctorWarnStyle                = lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+	doctorErrorStyle               = lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+	doctorNAStyle                  = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 )
 
 func main() {
@@ -106,35 +112,153 @@ func newDoctorCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			info := tui.CurrentRuntimeEnvironment()
 			tw := newTabWriter()
-			fmt.Fprintln(tw, "KEY\tVALUE")
-			fmt.Fprintf(tw, "platform\t%s (%s)\n", info.PlatformID, info.PlatformName)
-			fmt.Fprintf(tw, "bootloader\t%s (%s)\n", info.BootloaderID, info.BootloaderName)
-			fmt.Fprintf(tw, "bootloader-supported\t%s\n", boolWord(info.BootloaderSupported))
-			fmt.Fprintf(tw, "hook-supported\t%s\n", boolWord(info.HookSupported))
-			fmt.Fprintf(tw, "boot-dir\t%s\n", info.Layout.BootDir)
-			fmt.Fprintf(tw, "esp-root\t%s\n", info.Layout.ESPRoot)
-			fmt.Fprintf(tw, "efi-mirror-dir\t%s\n", info.Layout.EFIMirrorDir)
-			fmt.Fprintf(tw, "snapshot-dir\t%s\n", info.Layout.SnapshotDir)
-			fmt.Fprintf(tw, "root-modules-dir\t%s\n", info.Layout.RootModulesDir)
-			fmt.Fprintf(tw, "grub-custom\t%s\n", info.Layout.GrubCustom)
-			fmt.Fprintf(tw, "grub-cfg-output\t%s\n", info.Layout.GrubCfgOutput)
-			fmt.Fprintf(tw, "pacman-hook-path\t%s\n", info.Layout.PacmanHookPath)
-			fmt.Fprintf(tw, "pacman-post-hook-path\t%s\n", info.Layout.PacmanPostHookPath)
-			fmt.Fprintf(tw, "mkinitcpio-install-hook\t%s\n", info.Layout.MkinitcpioInstallHook)
-			fmt.Fprintf(tw, "mkinitcpio-runtime-hook\t%s\n", info.Layout.MkinitcpioRuntimeHook)
-			fmt.Fprintf(tw, "mkinitcpio-config\t%s\n", info.Layout.MkinitcpioConfig)
-			fmt.Fprintf(tw, "bls-entries-dir\t%s\n", info.Layout.BLSEntriesDir)
-			fmt.Fprintf(tw, "dnf5-actions-path\t%s\n", info.Layout.DNF5ActionsPath)
-			fmt.Fprintf(tw, "dnf4-pre-actions-path\t%s\n", info.Layout.DNF4PreActionsPath)
-			fmt.Fprintf(tw, "dnf4-post-actions-path\t%s\n", info.Layout.DNF4PostActionsPath)
-			fmt.Fprintf(tw, "dracut-module-dir\t%s\n", info.Layout.DracutModuleDir)
-			fmt.Fprintf(tw, "dracut-bin\t%s\n", info.Layout.DracutBin)
+			fmt.Fprintln(tw, "GROUP\tKEY\tSTATUS\tVALUE")
+			printDoctorRow(tw, "core", "platform", statusOK("detected"), "%s (%s)", info.PlatformID, info.PlatformName)
+			printDoctorRow(tw, "core", "bootloader", doctorBoolStatus(info.BootloaderSupported, "supported", "unsupported"), "%s (%s)", info.BootloaderID, info.BootloaderName)
+			printDoctorRow(tw, "core", "package-hooks", doctorBoolStatus(info.HookSupported, "supported", "not implemented"), "%s", boolWord(info.HookSupported))
+			printDoctorPathRow(tw, "paths", "boot-dir", info.Layout.BootDir, true)
+			printDoctorPathRow(tw, "paths", "esp-root", info.Layout.ESPRoot, true)
+			printDoctorPathRow(tw, "paths", "active-mirror-dir", info.Layout.EFIMirrorDir, false)
+			printDoctorPathRow(tw, "paths", "snapshot-dir", info.Layout.SnapshotDir, false)
+			printDoctorPathRow(tw, "paths", "root-modules-dir", info.Layout.RootModulesDir, true)
+			printDoctorPathRow(tw, "grub", "custom-file", info.Layout.GrubCustom, false)
+			printDoctorPathRow(tw, "grub", "config-output", info.Layout.GrubCfgOutput, false)
+			printPlatformDoctorRows(tw, info)
 			for _, warning := range info.Warnings {
-				fmt.Fprintf(tw, "warning\t%s\n", warning)
+				printDoctorRow(tw, "warnings", "warning", statusWarn("check"), "%s", warning)
 			}
 			return tw.Flush()
 		},
 	}
+}
+
+func printPlatformDoctorRows(tw *tabwriter.Writer, info tui.RuntimeEnvironment) {
+	switch info.PlatformID {
+	case tui.PlatformArch:
+		printDoctorRow(tw, "arch", "package-hook-backend", statusOK("supported"), "pacman")
+		printDoctorPathRow(tw, "arch", "pacman-pre-hook", info.Layout.PacmanHookPath, false)
+		printDoctorPathRow(tw, "arch", "pacman-post-hook", info.Layout.PacmanPostHookPath, false)
+		printDoctorRow(tw, "arch", "initramfs-backend", statusOK("supported"), "mkinitcpio")
+		printDoctorBinRow(tw, "arch", "mkinitcpio-bin", info.Layout.MkinitcpioBin)
+		printDoctorPathRow(tw, "arch", "mkinitcpio-config", info.Layout.MkinitcpioConfig, true)
+		printDoctorPathRow(tw, "arch", "mkinitcpio-install-hook", info.Layout.MkinitcpioInstallHook, false)
+		printDoctorPathRow(tw, "arch", "mkinitcpio-runtime-hook", info.Layout.MkinitcpioRuntimeHook, false)
+	case tui.PlatformFedora:
+		printDoctorRow(tw, "fedora", "package-hook-backend", statusOK("supported"), "dnf actions")
+		printDoctorPathRow(tw, "fedora", "dnf5-actions", info.Layout.DNF5ActionsPath, false)
+		printDoctorPathRow(tw, "fedora", "dnf4-pre-actions", info.Layout.DNF4PreActionsPath, false)
+		printDoctorPathRow(tw, "fedora", "dnf4-post-actions", info.Layout.DNF4PostActionsPath, false)
+		printDoctorRow(tw, "fedora", "initramfs-backend", statusOK("supported"), "dracut")
+		printDoctorBinRow(tw, "fedora", "dracut-bin", info.Layout.DracutBin)
+		printDoctorPathRow(tw, "fedora", "dracut-module-dir", info.Layout.DracutModuleDir, false)
+		printDoctorPathRow(tw, "fedora", "bls-entries-dir", info.Layout.BLSEntriesDir, true)
+	case tui.PlatformUbuntu, tui.PlatformDebian:
+		printDoctorRow(tw, info.PlatformID, "package-hook-backend", statusWarn("not implemented"), "apt/dpkg")
+		printDoctorRow(tw, info.PlatformID, "initramfs-backend", statusWarn("not implemented"), "initramfs-tools")
+	default:
+		printDoctorRow(tw, "platform", "package-hook-backend", statusNA("n/a"), "unknown")
+		printDoctorRow(tw, "platform", "initramfs-backend", statusNA("n/a"), "unknown")
+	}
+}
+
+type doctorStatus struct {
+	label string
+	style lipgloss.Style
+}
+
+func statusOK(label string) doctorStatus {
+	return doctorStatus{label: label, style: doctorOKStyle}
+}
+
+func statusWarn(label string) doctorStatus {
+	return doctorStatus{label: label, style: doctorWarnStyle}
+}
+
+func statusError(label string) doctorStatus {
+	return doctorStatus{label: label, style: doctorErrorStyle}
+}
+
+func statusNA(label string) doctorStatus {
+	return doctorStatus{label: label, style: doctorNAStyle}
+}
+
+func doctorBoolStatus(ok bool, okLabel string, badLabel string) doctorStatus {
+	if ok {
+		return statusOK(okLabel)
+	}
+	return statusWarn(badLabel)
+}
+
+func printDoctorRow(tw *tabwriter.Writer, group string, key string, status doctorStatus, format string, args ...any) {
+	fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", group, key, renderDoctorStatus(status), fmt.Sprintf(format, args...))
+}
+
+func printDoctorPathRow(tw *tabwriter.Writer, group string, key string, path string, required bool) {
+	status := pathStatus(path, required)
+	printDoctorRow(tw, group, key, status, "%s", valueOrDash(path))
+}
+
+func printDoctorBinRow(tw *tabwriter.Writer, group string, key string, bin string) {
+	status := binStatus(bin)
+	value := valueOrDash(bin)
+	if resolved, err := exec.LookPath(bin); err == nil && resolved != "" {
+		value = resolved
+	}
+	printDoctorRow(tw, group, key, status, "%s", value)
+}
+
+func pathStatus(path string, required bool) doctorStatus {
+	if strings.TrimSpace(path) == "" {
+		if required {
+			return statusError("missing")
+		}
+		return statusNA("n/a")
+	}
+	if _, err := os.Stat(path); err == nil {
+		return statusOK("present")
+	}
+	parent := filepath.Dir(path)
+	if parent != "." && parent != path {
+		if _, err := os.Stat(parent); err == nil {
+			if required {
+				return statusError("missing")
+			}
+			return statusWarn("not installed")
+		}
+	}
+	if required {
+		return statusError("missing")
+	}
+	return statusWarn("not available")
+}
+
+func binStatus(bin string) doctorStatus {
+	if strings.TrimSpace(bin) == "" {
+		return statusError("missing")
+	}
+	if _, err := exec.LookPath(bin); err == nil {
+		return statusOK("available")
+	}
+	return statusError("missing")
+}
+
+func renderDoctorStatus(status doctorStatus) string {
+	label := status.label
+	if label == "" {
+		label = "unknown"
+	}
+	if os.Getenv("NO_COLOR") != "" {
+		return label
+	}
+	return status.style.Render(label)
+}
+
+func valueOrDash(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "-"
+	}
+	return value
 }
 
 func newHookCmd() *cobra.Command {

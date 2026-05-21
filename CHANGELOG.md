@@ -4,6 +4,7 @@
 
 ### Added
 
+- `bootrecov doctor` now groups core, path, GRUB, and platform-specific diagnostics with color-coded status values; `NO_COLOR=1` disables colors for automation.
 - Fedora/RHEL-family detection with Fedora-specific hook paths in `doctor`.
 - Fedora DNF5/DNF4 action hook installation and Fedora dracut boot-time module restore hook installation.
 - Fedora/BLS Bootrecov entries are preferred when the active snapshot mirror is on the same boot filesystem.
@@ -12,6 +13,7 @@
 
 ### Fixed
 
+- `bootrecov doctor` no longer prints Fedora/dracut diagnostics on Arch, and now reports distro-specific tool availability such as `dracut-bin available` on Fedora.
 - Fedora/BLS entries now keep Btrfs `/boot` mount-root paths visible to GRUB.
 - Fedora/BLS systems now default active mirrors to `/boot/bootrecov-snapshots` without requiring a VM-only override.
 - Fedora DNF action hooks are now scoped to boot-critical package filters and prefer DNF5 over DNF4 when both plugin layouts exist.

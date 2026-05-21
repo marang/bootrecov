@@ -41,6 +41,7 @@ type SystemLayout struct {
 	MkinitcpioInstallHook string
 	MkinitcpioRuntimeHook string
 	MkinitcpioConfig      string
+	MkinitcpioBin         string
 	BLSEntriesDir         string
 	DNF5ActionsPath       string
 	DNF4PreActionsPath    string
@@ -195,6 +196,7 @@ func currentSystemLayout() SystemLayout {
 		MkinitcpioInstallHook: MkinitcpioInstallPath,
 		MkinitcpioRuntimeHook: MkinitcpioHookPath,
 		MkinitcpioConfig:      MkinitcpioConfPath,
+		MkinitcpioBin:         MkinitcpioBin,
 		BLSEntriesDir:         BLSEntriesDir,
 		DNF5ActionsPath:       DNF5ActionsPath,
 		DNF4PreActionsPath:    DNF4PreActionsPath,

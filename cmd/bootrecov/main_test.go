@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"text/tabwriter"
 
 	"github.com/marang/bootrecov/internal/tui"
 )
@@ -234,5 +236,118 @@ func TestRenderRiskAcknowledgementPromptLooksLikePanel(t *testing.T) {
 	}
 	if strings.Contains(prompt, strings.Join([]string{"I", "UNDERSTAND"}, " ")) {
 		t.Fatalf("prompt should not use the old phrase: %s", prompt)
+	}
+}
+
+func renderDoctorPlatformRows(t *testing.T, info tui.RuntimeEnvironment) string {
+	t.Helper()
+	t.Setenv("NO_COLOR", "1")
+	var buf bytes.Buffer
+	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+	printPlatformDoctorRows(tw, info)
+	if err := tw.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.String()
+}
+
+func TestDoctorPlatformRowsShowOnlyArchHookBackend(t *testing.T) {
+	out := renderDoctorPlatformRows(t, tui.RuntimeEnvironment{
+		PlatformID: tui.PlatformArch,
+		Layout: tui.SystemLayout{
+			PacmanHookPath:        "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook",
+			PacmanPostHookPath:    "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook",
+			MkinitcpioInstallHook: "/usr/lib/initcpio/install/bootrecov",
+			MkinitcpioRuntimeHook: "/usr/lib/initcpio/hooks/bootrecov",
+			MkinitcpioConfig:      "/etc/mkinitcpio.conf",
+			MkinitcpioBin:         "/usr/bin/mkinitcpio",
+			DracutBin:             "dracut",
+		},
+	})
+	for _, want := range []string{
+		"package-hook-backend",
+		"supported",
+		"pacman",
+		"initramfs-backend",
+		"mkinitcpio",
+		"mkinitcpio-bin",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected Arch doctor rows to contain %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"dracut-bin", "dnf5-actions-path", "bls-entries-dir"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("Arch doctor rows should not contain %q:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestDoctorPlatformRowsShowOnlyFedoraHookBackend(t *testing.T) {
+	out := renderDoctorPlatformRows(t, tui.RuntimeEnvironment{
+		PlatformID: tui.PlatformFedora,
+		Layout: tui.SystemLayout{
+			MkinitcpioBin:       "mkinitcpio",
+			BLSEntriesDir:       "/boot/loader/entries",
+			DNF5ActionsPath:     "/etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions",
+			DNF4PreActionsPath:  "/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action",
+			DNF4PostActionsPath: "/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action",
+			DracutModuleDir:     "/usr/lib/dracut/modules.d/95bootrecov",
+			DracutBin:           "/usr/sbin/dracut",
+		},
+	})
+	for _, want := range []string{
+		"package-hook-backend",
+		"dnf actions",
+		"initramfs-backend",
+		"dracut",
+		"dracut-bin",
+		"bls-entries-dir",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected Fedora doctor rows to contain %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"mkinitcpio-bin", "pacman-pre-hook"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("Fedora doctor rows should not contain %q:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestDoctorPlatformRowsShowMissingFedoraDracut(t *testing.T) {
+	out := renderDoctorPlatformRows(t, tui.RuntimeEnvironment{
+		PlatformID: tui.PlatformFedora,
+		Layout: tui.SystemLayout{
+			BLSEntriesDir:   "/boot/loader/entries",
+			DracutModuleDir: "/usr/lib/dracut/modules.d/95bootrecov",
+			DracutBin:       "bootrecov-missing-dracut",
+		},
+	})
+	if !strings.Contains(out, "dracut-bin") || !strings.Contains(out, "missing") {
+		t.Fatalf("expected Fedora doctor rows to report missing dracut:\n%s", out)
+	}
+}
+
+func TestDoctorPlatformRowsShowUnsupportedDebianHookBackend(t *testing.T) {
+	out := renderDoctorPlatformRows(t, tui.RuntimeEnvironment{
+		PlatformID: tui.PlatformDebian,
+		Layout: tui.SystemLayout{
+			DracutBin: "dracut",
+		},
+	})
+	for _, want := range []string{
+		"apt/dpkg",
+		"not implemented",
+		"initramfs-tools",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected Debian doctor rows to contain %q:\n%s", want, out)
+		}
+	}
+	for _, unwanted := range []string{"dracut-bin", "mkinitcpio-bin", "dnf5-actions-path"} {
+		if strings.Contains(out, unwanted) {
+			t.Fatalf("Debian doctor rows should not contain %q:\n%s", unwanted, out)
+		}
 	}
 }

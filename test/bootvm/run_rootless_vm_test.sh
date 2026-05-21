@@ -533,7 +533,7 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "EXPECTED_PLATFORM='${EXPECTED_PLAT
 set -euo pipefail
 SNAPSHOT_DIR=/var/backups/bootrecov-snapshots/2026-smoke
 GRUB_CUSTOM=/etc/grub.d/41_bootrecov_snapshots
-BOOTRECOV_ENV=(BOOTRECOV_ACCEPT_RISK=1)
+BOOTRECOV_ENV=(BOOTRECOV_ACCEPT_RISK=1 NO_COLOR=1)
 BOOTRECOV_MIRROR_ROOT=/boot/efi/bootrecov-snapshots
 if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
   BOOTRECOV_MIRROR_ROOT=/boot/bootrecov-snapshots
@@ -647,9 +647,9 @@ echo "[guest] setup done"
 echo "[guest] verifying detected platform, bootloader, and hook policy"
 sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov doctor >/tmp/bootrecov-doctor.log
 sudo cat /tmp/bootrecov-doctor.log | sed 's/^/[doctor] /'
-DOCTOR_PLATFORM="$(awk '$1 == "platform" {print $2}' /tmp/bootrecov-doctor.log)"
-DOCTOR_BOOTLOADER="$(awk '$1 == "bootloader" {print $2}' /tmp/bootrecov-doctor.log)"
-DOCTOR_HOOK_SUPPORTED="$(awk '$1 == "hook-supported" {print $2}' /tmp/bootrecov-doctor.log)"
+DOCTOR_PLATFORM="$(awk '$1 == "core" && $2 == "platform" {print $4}' /tmp/bootrecov-doctor.log)"
+DOCTOR_BOOTLOADER="$(awk '$1 == "core" && $2 == "bootloader" {print $4}' /tmp/bootrecov-doctor.log)"
+DOCTOR_HOOK_SUPPORTED="$(awk '$1 == "core" && $2 == "package-hooks" {print $4}' /tmp/bootrecov-doctor.log)"
 if [[ "${DOCTOR_PLATFORM}" != "${EXPECTED_PLATFORM}" ]]; then
   echo "[guest] expected platform ${EXPECTED_PLATFORM}, got ${DOCTOR_PLATFORM}" >&2
   exit 1
@@ -661,6 +661,16 @@ fi
 if [[ "${DOCTOR_HOOK_SUPPORTED}" != "${EXPECTED_HOOK_SUPPORTED}" ]]; then
   echo "[guest] expected hook-supported ${EXPECTED_HOOK_SUPPORTED}, got ${DOCTOR_HOOK_SUPPORTED}" >&2
   exit 1
+fi
+if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+  if ! awk '$1 == "fedora" && $2 == "dracut-bin" && $3 == "available" {found=1} END {exit found ? 0 : 1}' /tmp/bootrecov-doctor.log; then
+    echo "[guest] expected Fedora doctor to show available dracut-bin" >&2
+    exit 1
+  fi
+  if ! awk '$1 == "fedora" && $2 == "bls-entries-dir" && $3 == "present" {found=1} END {exit found ? 0 : 1}' /tmp/bootrecov-doctor.log; then
+    echo "[guest] expected Fedora doctor to show present BLS entries dir" >&2
+    exit 1
+  fi
 fi
 if [[ "${EXPECTED_HOOK_SUPPORTED}" == "no" ]]; then
   if sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov hook install >/tmp/bootrecov-hook-install.log 2>&1; then
