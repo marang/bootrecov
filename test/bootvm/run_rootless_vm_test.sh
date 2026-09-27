@@ -40,6 +40,12 @@ BASE_IMAGE_NAME=""
 DEFAULT_IMAGE_URL=""
 
 case "${BOOTVM_SCENARIO}" in
+  arch-grub-cleanup)
+    EXPECTED_PLATFORM="arch"
+    EXPECTED_HOOK_SUPPORTED="yes"
+    BASE_IMAGE_NAME="Arch-Linux-x86_64-cloudimg.qcow2"
+    DEFAULT_IMAGE_URL="https://fastly.mirror.pkgbuild.com/images/latest/Arch-Linux-x86_64-cloudimg.qcow2"
+    ;;
   ubuntu-grub)
     EXPECTED_PLATFORM="ubuntu"
     BASE_IMAGE_NAME="ubuntu-noble-server-cloudimg-amd64.img"
@@ -58,7 +64,7 @@ case "${BOOTVM_SCENARIO}" in
 		;;
   *)
     echo "unsupported bootvm scenario: ${BOOTVM_SCENARIO}" >&2
-    echo "supported scenarios: ubuntu-grub, debian-grub, fedora-grub-bls" >&2
+    echo "supported scenarios: arch-grub-cleanup, ubuntu-grub, debian-grub, fedora-grub-bls" >&2
     exit 2
     ;;
 esac
@@ -83,6 +89,10 @@ SSH_KEY="${WORK_DIR}/id_ed25519"
 SSH_PORT="${BOOTVM_SSH_PORT:-2222}"
 SSH_CHECK_TIMEOUT="${BOOTVM_SSH_CHECK_TIMEOUT:-8}"
 VM_USER="bootrecov"
+VM_GROUP="sudo"
+if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" ]]; then
+  VM_GROUP="wheel"
+fi
 VM_HOST="127.0.0.1"
 SSH_OPTS=(-i "${SSH_KEY}" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -o ConnectionAttempts=1 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p "${SSH_PORT}")
 SCP_OPTS=(-i "${SSH_KEY}" -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=5 -P "${SSH_PORT}")
@@ -304,8 +314,17 @@ ssh_probe() {
 
 launch_qemu() {
   rm -f "${PID_FILE}" "${SERIAL_SOCKET}"
+  local acceleration=()
+  local power_options=(-no-shutdown)
+  if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" && -r /dev/kvm && -w /dev/kvm ]]; then
+    acceleration=(-accel kvm -cpu host)
+  fi
+  if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" ]]; then
+    power_options=()
+  fi
   qemu-system-x86_64 \
     -name bootrecov-bootvm \
+    "${acceleration[@]}" \
     -m 2048 \
     -smp 2 \
     -machine q35 \
@@ -317,7 +336,7 @@ launch_qemu() {
     -device virtio-net-pci,netdev=n1 \
     -display none \
     -monitor none \
-    -no-shutdown \
+    "${power_options[@]}" \
     -chardev "socket,id=serial0,path=${SERIAL_SOCKET},server=on,wait=off,logfile=${SERIAL_LOG},logappend=on,signal=off" \
     -serial "chardev:serial0" \
     -pidfile "${PID_FILE}" \
@@ -384,6 +403,12 @@ ensure_assets() {
     set_status "downloading-base-image"
     echo "downloading cloud image: ${IMAGE_URL}"
     curl -L --fail -o "${BASE_IMAGE}" "${IMAGE_URL}"
+  fi
+  if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" ]]; then
+    if [[ ! -f "${BASE_IMAGE}.SHA256" ]]; then
+      curl -L --fail -o "${BASE_IMAGE}.SHA256" "${IMAGE_URL}.SHA256"
+    fi
+    (cd "${WORK_DIR}" && sha256sum -c "${BASE_IMAGE_NAME}.SHA256")
   fi
   if [[ ! -f "${SSH_KEY}" ]]; then
     set_status "generating-ssh-key"
@@ -467,6 +492,9 @@ fi
 set_status "preparing-disks"
 rm -f "${OVERLAY_IMAGE}" "${SEED_IMAGE}" "${SERIAL_LOG}" "${SERIAL_SOCKET}" "${PID_FILE}" "${OVMF_CODE_FILE}" "${OVMF_VARS_FILE}"
 qemu-img create -f qcow2 -F qcow2 -b "${BASE_IMAGE}" "${OVERLAY_IMAGE}" >/dev/null
+if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" ]]; then
+  qemu-img resize "${OVERLAY_IMAGE}" 24G >/dev/null
+fi
 prepare_ovmf
 
 set_status "writing-cloud-init"
@@ -474,7 +502,7 @@ cat >"${WORK_DIR}/user-data" <<EOF
 #cloud-config
 users:
   - name: ${VM_USER}
-    groups: [sudo]
+    groups: [${VM_GROUP}]
     shell: /bin/bash
     sudo: ALL=(ALL) NOPASSWD:ALL
     lock_passwd: false
@@ -526,6 +554,38 @@ fi
 set_status "copying-binary"
 scp "${SCP_OPTS[@]}" "${BIN_PATH}" "${VM_USER}@${VM_HOST}:/tmp/bootrecov" >/dev/null
 scp "${SCP_OPTS[@]}" "${SMOKE_BIN}" "${VM_USER}@${VM_HOST}:/tmp/guest_smoke" >/dev/null
+
+if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" ]]; then
+  scp "${SCP_OPTS[@]}" "${ROOT_DIR}/test/bootvm/guest_arch_cleanup.sh" "${VM_USER}@${VM_HOST}:/tmp/guest_arch_cleanup.sh" >/dev/null
+  set_status "arch-cleanup-prepare"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo env BOOTRECOV_ACCEPT_RISK=1 BOOTRECOV_BOOTLOADER=grub bash /tmp/guest_arch_cleanup.sh prepare'
+  set_status "arch-cleanup-recovery-boot"
+  # The Arch cloud image initially boots systemd-boot and records that choice
+  # in its guest NVRAM. Start with fresh disposable vars after installing GRUB
+  # to its removable fallback path, so firmware selects the intended loader.
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo systemctl poweroff' || true
+  for _ in $(seq 1 60); do
+    if ! qemu_alive; then break; fi
+    sleep 1
+  done
+  if qemu_alive; then
+    echo "Arch guest did not power off before firmware reset" >&2
+    exit 1
+  fi
+  cp -f "$(find_ovmf_vars)" "${OVMF_VARS_FILE}"
+  launch_qemu
+  wait_for_ssh 360
+  # Arch's /tmp is volatile across reboot.
+  scp "${SCP_OPTS[@]}" "${BIN_PATH}" "${VM_USER}@${VM_HOST}:/tmp/bootrecov" >/dev/null
+  scp "${SCP_OPTS[@]}" "${ROOT_DIR}/test/bootvm/guest_arch_cleanup.sh" "${VM_USER}@${VM_HOST}:/tmp/guest_arch_cleanup.sh" >/dev/null
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo cat /boot/grub/grub.cfg' >"${WORK_DIR}/generated-grub.cfg"
+  set_status "arch-cleanup-verify"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo env BOOTRECOV_ACCEPT_RISK=1 BOOTRECOV_BOOTLOADER=grub bash /tmp/guest_arch_cleanup.sh verify'
+  set_status "passed"
+  echo "Arch GRUB module-cleanup VM test passed."
+  echo "serial log: ${SERIAL_LOG}"
+  exit 0
+fi
 
 set_status "running-guest-smoke-test"
 echo "guest smoke test: begin"

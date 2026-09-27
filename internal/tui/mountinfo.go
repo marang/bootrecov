@@ -35,7 +35,8 @@ func findMountInfo(path string) (mountInfoEntry, error) {
 	bestLen := 0
 	for _, entry := range entries {
 		mountPoint := filepath.Clean(entry.mountPoint)
-		if path != mountPoint && !strings.HasPrefix(path, mountPoint+string(os.PathSeparator)) {
+		prefix := strings.TrimSuffix(mountPoint, string(os.PathSeparator)) + string(os.PathSeparator)
+		if path != mountPoint && !strings.HasPrefix(path, prefix) {
 			continue
 		}
 		if len(mountPoint) > bestLen {

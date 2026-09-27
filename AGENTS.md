@@ -32,6 +32,8 @@ Important behavior:
 - activation restores an archived `/usr/lib/modules/<kernel-version>` tree automatically when the live root module tree is missing
 - activation must not overwrite an existing `/usr/lib/modules/<kernel-version>` tree
 - Bootrecov marks newly restored module trees and cleans them up on Arch after their last recovery entry is removed when kernel, package, and ownership checks pass; unsupported distributions and unmarked trees remain untouched
+- Arch module cleanup removes matching DKMS builds only for unused, inode-marked restored trees; active recoveries (including Bootrecov's generated `search --file` entries), the running kernel, installed package files, and snapshots without module archives protect their kernel versions
+- standard Windows GRUB menuentries targeting the literal `/EFI/Microsoft/Boot/bootmgfw.efi` path with recognized setup commands do not block cleanup; unknown chainloaders, UKIs, dynamic targets, BootNext selections, and unrecognized file searches remain conservative blockers
 - entry, snapshot, and module-tree mutations share a cross-process lock under `/run/lock/bootrecov`; module cleanup holds the Arch package lock and is deferred during package transactions
 - GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
 - Fedora-family GRUB/BLS systems use Bootrecov-owned BLS entries under `/boot/loader/entries` when the active mirror is on the same boot filesystem
@@ -251,6 +253,7 @@ Rootless integration test:
 ```bash
 make test-bootvm-requirements
 make test-bootvm
+make test-bootvm-arch-grub-cleanup
 make test-bootvm-ubuntu-grub
 make test-bootvm-debian-grub
 make test-bootvm-fedora-grub-bls

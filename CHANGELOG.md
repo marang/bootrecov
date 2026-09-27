@@ -22,6 +22,21 @@
 - Fedora dracut restore now recognizes Bootrecov fallback boots from `BOOT_IMAGE` paths when GRUB/BLS does not preserve custom kernel markers.
 - Debian VM gate now finds GRUB tools installed under `/usr/sbin` in non-login SSH commands.
 
+## v0.4.13 - 2026-09-27
+
+### Fixed
+
+- Recognized Windows GRUB chainloader entries no longer block Arch cleanup of unused Bootrecov-restored kernel modules and matching DKMS builds.
+- Bootrecov's generated `search --file` recovery entries protect their own kernel versions and visible matching images on other mounted filesystems without blocking cleanup of a different unused kernel.
+- GRUB paths now correctly include the root filesystem and Btrfs mount roots.
+- Standard GRUB header assignments, EFI class labels, and platform comparisons no longer cause false cleanup warnings. Unknown chainloaders, UKIs, dynamic targets, and BootNext selections remain conservative blockers.
+- Shared recovery kernels, the running kernel, installed kernel packages, and unmarked module trees remain protected; package/process locks and mount checks are preserved.
+
+### Added
+
+- Regression coverage through actual activation, deactivation, deletion, and entry-removal paths.
+- `make test-bootvm-arch-grub-cleanup`: a disposable Arch GRUB recovery boot with real kernel packages and DKMS builds, including shared kernels, unknown loaders, locks, mounts, and ownership checks.
+
 ## v0.4.12 - 2026-09-27
 
 ### Fixed

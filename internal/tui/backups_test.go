@@ -2467,3 +2467,19 @@ func TestMaxBackupCountFromFree(t *testing.T) {
 		})
 	}
 }
+
+func TestGrubVisiblePathUsesRootMount(t *testing.T) {
+	for _, subvolume := range []string{"/", "/@"} {
+		t.Run(subvolume, func(t *testing.T) {
+			boot, snap, efi, grub := setupDirs(t)
+			setTestGlobals(t, boot, snap, efi, grub)
+			mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
+			writeFileWithContent(t, mountInfoPath, "1 0 0:1 "+subvolume+" / rw - btrfs root rw\n")
+			image := filepath.Join(EfiDir, "keep", "vmlinuz-linux")
+			want := filepath.Join(subvolume, image)
+			if got := grubVisiblePath(image); got != want {
+				t.Fatalf("root filesystem recovery path=%q, want %q", got, want)
+			}
+		})
+	}
+}

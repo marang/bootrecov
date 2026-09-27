@@ -481,7 +481,11 @@ func protectBootConfigKernels(config, configDir, grubPrefix string, protected ma
 	if strings.Contains(string(data), "\\\n") {
 		return fmt.Errorf("unsupported GRUB line continuation in %s", canonical)
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	lines, err := cleanupKnownMenuentries(strings.Split(string(data), "\n"), protected)
+	if err != nil {
+		return err
+	}
+	for _, line := range lines {
 		fields := strings.Fields(strings.ReplaceAll(line, ";", " ; "))
 		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
 			continue
@@ -497,10 +501,28 @@ func protectBootConfigKernels(config, configDir, grubPrefix string, protected ma
 		if fields[0] == "unset" && len(fields) > 1 && (strings.Trim(fields[1], "\"'") == "prefix" || strings.Trim(fields[1], "\"'") == "config_directory") {
 			return fmt.Errorf("boot config %s unsets GRUB source directory", canonical)
 		}
+		menuentryHeader := fields[0] == "menuentry"
+		// The literal [ command consumes test operands. Stop at ] or a
+		// command separator, so a following executable EFI command is
+		// never mistaken for a comparison value.
+		testArguments := len(fields) > 1 && (fields[0] == "if" || fields[0] == "elif") && fields[1] == "["
 		for i, field := range fields {
+			if field == "{" {
+				menuentryHeader = false
+			}
+			if strings.ContainsAny(field, "];&|") || field == "{" || field == "}" {
+				testArguments = false
+			}
 			command := strings.Trim(field, "{}\"'")
 			commandStart := i == 0 || fields[i-1] == ";" || fields[i-1] == "{" || fields[i-1] == "then" || fields[i-1] == "else" || strings.HasPrefix(field, "{")
-			if commandStart && strings.ContainsAny(command, "\"'\\$") {
+			// Bare NAME=value is GRUB assignment syntax, not a command
+			// whose name is expanded. Inspect the literal name separately;
+			// root and source-directory mutations remain guarded below/above.
+			assignmentName, _, assignment := strings.Cut(command, "=")
+			literalAssignment := assignment && assignmentName != "" && strings.IndexFunc(assignmentName, func(r rune) bool {
+				return !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_')
+			}) == -1 && !(assignmentName[0] >= '0' && assignmentName[0] <= '9')
+			if commandStart && !literalAssignment && strings.ContainsAny(command, "\"'\\$") {
 				return fmt.Errorf("unsupported GRUB command syntax in %s", canonical)
 			}
 			if command == "set" && i+1 < len(fields) {
@@ -533,6 +555,15 @@ func protectBootConfigKernels(config, configDir, grubPrefix string, protected ma
 				if err := devices.selectRoot("fs_uuid", uuid); err != nil {
 					return err
 				}
+			}
+			// --class efi labels a menuentry; it is not an EFI command.
+			// End this exception at the opening brace so inline commands
+			// and condition commands still take the conservative path.
+			if command == "efi" && (testArguments || menuentryHeader && i > 0 && fields[i-1] == "--class") {
+				continue
+			}
+			if command == "bootnext" {
+				return fmt.Errorf("cannot identify kernel version of GRUB BootNext target in %s", canonical)
 			}
 			if command == "efi" || command == "chainloader" {
 				return fmt.Errorf("cannot identify kernel version of EFI boot reference in %s", canonical)

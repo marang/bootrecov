@@ -5,7 +5,7 @@ GO_CACHE_DIR ?= /tmp/bootrecov-go-cache
 GO_MOD_CACHE_DIR ?= /tmp/bootrecov-go-mod-cache
 GO_ENV := GOCACHE=$(GO_CACHE_DIR) GOMODCACHE=$(GO_MOD_CACHE_DIR)
 
-.PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-ubuntu-grub test-bootvm-debian-grub test-bootvm-fedora-grub-bls test-bootvm-grub-matrix test-bootvm-platform-matrix test-bootvm-watch
+.PHONY: help build run fmt test clean test-bootvm-requirements test-bootvm-prepare test-bootvm test-bootvm-arch-grub-cleanup test-bootvm-ubuntu-grub test-bootvm-debian-grub test-bootvm-fedora-grub-bls test-bootvm-grub-matrix test-bootvm-platform-matrix test-bootvm-watch
 
 help:
 	@echo "Targets:"
@@ -17,6 +17,7 @@ help:
 	@echo "  make test-bootvm-requirements Check host requirements for rootless VM test"
 	@echo "  make test-bootvm-prepare  Pre-cache VM assets (optional; test-bootvm auto-runs this when needed)"
 	@echo "  make test-bootvm          Run rootless QEMU Ubuntu+GRUB boot test (auto-prepare + guest smoke test)"
+	@echo "  make test-bootvm-arch-grub-cleanup Run Arch GRUB recovery boot and module/DKMS cleanup gate"
 	@echo "  make test-bootvm-ubuntu-grub Run explicit Ubuntu+GRUB VM gate"
 	@echo "  make test-bootvm-debian-grub Run explicit Debian+GRUB VM gate"
 	@echo "  make test-bootvm-fedora-grub-bls Run explicit Fedora+GRUB/BLS VM gate"
@@ -54,6 +55,9 @@ test-bootvm: test-bootvm-requirements
 
 test-bootvm-ubuntu-grub: test-bootvm-requirements
 	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario ubuntu-grub
+
+test-bootvm-arch-grub-cleanup:
+	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario arch-grub-cleanup
 
 test-bootvm-debian-grub: test-bootvm-requirements
 	$(GO_ENV) bash test/bootvm/run_rootless_vm_test.sh --scenario debian-grub

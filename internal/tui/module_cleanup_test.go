@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -48,6 +49,86 @@ func makeMarkedModules(t *testing.T, version string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+// Execute Bootrecov's real custom-entry script whenever the production removal
+// path regenerates grub.cfg. No host bootloader command or path is involved.
+func setupCleanupGeneratedGRUB(t *testing.T, extra string) {
+	t.Helper()
+	// Model a mounted ESP so grubVisiblePath and the cleanup resolver use
+	// the same filesystem-relative paths as a real GRUB installation.
+	mounts, err := os.ReadFile(mountInfoPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFileWithContent(t, mountInfoPath, string(mounts)+"2 1 0:2 / "+EfiDir+" rw - vfat esp rw\n")
+	fixture := filepath.Join(t.TempDir(), "extra.cfg")
+	writeFileWithContent(t, fixture, extra)
+	stub := filepath.Join(t.TempDir(), "grub-mkconfig")
+	writeFileWithContent(t, stub, "#!/bin/sh\nset -eu\nsh '"+GrubCustom+"' > \"$2\"\ncat '"+fixture+"' >> \"$2\"\n")
+	if err := os.Chmod(stub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	GrubMkconfig, AutoUpdateGrub = stub, true
+}
+
+func TestCleanupRemovalWithWindowsDualBoot(t *testing.T) {
+	for _, remove := range []struct {
+		name string
+		fn   func(string) error
+	}{{"deactivate", DeactivateBackup}, {"delete", DeleteBackup}} {
+		t.Run(remove.name, func(t *testing.T) {
+			setupModuleCleanupTest(t)
+			setupCleanupGeneratedGRUB(t, "menuentry 'Windows Boot Manager' {\n chainloader /EFI/Microsoft/Boot/bootmgfw.efi\n}\n")
+			version := "6.1.0-old"
+			path := makeMarkedModules(t, version)
+			makeVersionedBootableBackup(t, SnapshotDir, "old", version)
+			writeFileWithContent(t, archivedModuleImagePath(filepath.Join(SnapshotDir, "old"), version), "archive")
+			if err := ActivateBackup("old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := remove.fn("old"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("Windows entry blocked cleanup: %v", err)
+			}
+		})
+	}
+}
+
+// Arch's real 00_header uses assignments without the optional set command.
+func TestCleanupRemovalWithGRUBHeaderAssignments(t *testing.T) {
+	for _, remove := range []struct {
+		name string
+		fn   func(string) error
+	}{{"deactivate", DeactivateBackup}, {"delete", DeleteBackup}} {
+		t.Run(remove.name, func(t *testing.T) {
+			setupModuleCleanupTest(t)
+			setupCleanupGeneratedGRUB(t, `menuentry_id_option="--id"
+saved_entry="${chosen}"
+if [ "$grub_platform" = "efi" ]; then
+  insmod bli
+fi
+menuentry 'UEFI Firmware Settings' --class efi --class os $menuentry_id_option 'uefi-firmware' {
+    fwsetup
+}
+`)
+			version := "6.1.0-old"
+			path := makeMarkedModules(t, version)
+			makeVersionedBootableBackup(t, SnapshotDir, "old", version)
+			writeFileWithContent(t, archivedModuleImagePath(filepath.Join(SnapshotDir, "old"), version), "archive")
+			if err := ActivateBackup("old"); err != nil {
+				t.Fatal(err)
+			}
+			if err := remove.fn("old"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(path); !os.IsNotExist(err) {
+				t.Fatalf("GRUB header blocked cleanup: %v", err)
+			}
+		})
+	}
 }
 
 func TestRestoredModuleMarkerBindsVersionAndInode(t *testing.T) {
@@ -865,13 +946,30 @@ func TestCleanupGRUBAllowsBootOnRootFilesystem(t *testing.T) {
 
 func TestCleanupGRUBRejectsUnsupportedCommandAndAssignmentSyntax(t *testing.T) {
 	for _, script := range []string{
+		`prefix="/external"; source $prefix/custom.cfg`,
+		`config_directory="/external"; source $config_directory/custom.cfg`,
+		`root="${other}"; linux /vmlinuz-linux`,
+		`ro"ot"="hd99,gpt1"; linux /vmlinuz-linux`,
+		`$loader="anything" /external/custom-image`,
 		`set "prefix=/external"; source $prefix/custom.cfg`,
 		`set "config_directory=/external"; source $config_directory/custom.cfg`,
 		`set pre"fix"=/external; source $prefix/custom.cfg`,
 		`set ro"ot"=hd99,gpt1; linux /vmlinuz-linux`,
 		`li"nux" /external/custom-image`,
 		`$loader /external/custom-image`,
+		`bootnext 0000; reboot`,
 		`chainloader /external/custom-kernel.efi`,
+		`menuentry 'x' --class efi { efi /EFI/Linux/kernel.efi; }`,
+		`if [ "$grub_platform" = "efi" ]; then efi /EFI/Linux/kernel.efi; fi`,
+		`if [ -n x; efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if [ -n x && efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if [ -n x ]&& efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if [ -n x ]|| efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if [ -n x&& efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if [ -n x || efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if efi /EFI/Linux/kernel.efi; then reboot; fi`,
+		`if 'efi' /EFI/Linux/kernel.efi; then reboot; fi`,
+		`menuentry 'x' --class efi { --class efi /EFI/Linux/kernel.efi; }`,
 	} {
 		t.Run(script, func(t *testing.T) {
 			setupCleanupGRUBDevices(t)
@@ -884,5 +982,198 @@ func TestCleanupGRUBRejectsUnsupportedCommandAndAssignmentSyntax(t *testing.T) {
 				t.Fatalf("modules removed despite unsupported script: %v", err)
 			}
 		})
+	}
+}
+
+func TestCleanupRemovalGeneratedEntries(t *testing.T) {
+	for _, operation := range []struct {
+		name   string
+		remove func(string) error
+	}{
+		{"deactivate", DeactivateBackup}, {"delete", DeleteBackup},
+		{"remove-entry", func(name string) error { return RemoveGrubEntry(backupIDForName(name)) }},
+	} {
+		for _, shared := range []bool{false, true} {
+			t.Run(operation.name+"/shared="+fmt.Sprint(shared), func(t *testing.T) {
+				base := setupModuleCleanupTest(t)
+				// Windows's ESP is deliberately unmounted/unprovable. Its UUID setup
+				// must neither stop cleanup nor become a root for the recovery entry.
+				setupCleanupGeneratedGRUB(t, `menuentry 'Windows Boot Manager' --class windows --class os $menuentry_id_option 'osprober-efi-win' {
+ insmod part_gpt
+ insmod fat
+ set root='hd9,gpt1'
+ if [ x$feature_platform_search_hint = xy ]; then
+ search --no-floppy --fs-uuid --set=root --hint-efi=hd9,gpt1 windows-uuid
+ else
+ search --no-floppy --fs-uuid --set=root windows-uuid
+ fi
+ chainloader /EFI/Microsoft/Boot/bootmgfw.efi
+}
+`)
+				oldVersion, keepVersion := "6.1.0-old", "6.2.0-keep"
+				if shared {
+					keepVersion = oldVersion
+				}
+				old := makeMarkedModules(t, oldVersion)
+				keep := makeMarkedModules(t, keepVersion)
+				running := makeMarkedModules(t, "6.99.0-running")
+				packaged := makeMarkedModules(t, "6.3.0-packaged")
+				unmarked := filepath.Join(RootModulesDir, "6.4.0-unmarked")
+				writeFileWithContent(t, filepath.Join(unmarked, "modules.dep"), "keep")
+				var removals []string
+				moduleCleanupLookPath = func(string) (string, error) { return "dkms-stub", nil }
+				moduleCleanupCommand = func(name string, args ...string) ([]byte, error) {
+					switch name {
+					case "file":
+						path := args[len(args)-1]
+						if strings.Contains(path, "/keep/") {
+							return []byte("Linux kernel version " + keepVersion + "\n"), nil
+						}
+					case "pacman":
+						return []byte(packaged + "/kernel/package.ko\n"), nil
+					case "dkms":
+						if args[0] == "status" {
+							return []byte("driver/1.0, " + oldVersion + ", x86_64: installed\ndriver/1.0, 6.99.0-running, x86_64: installed\n"), nil
+						}
+						removals = append(removals, strings.Join(args, " "))
+						return nil, nil
+					}
+					return base(name, args...)
+				}
+				for name, version := range map[string]string{"old": oldVersion, "keep": keepVersion} {
+					makeVersionedBootableBackup(t, SnapshotDir, name, version)
+					writeFileWithContent(t, archivedModuleImagePath(filepath.Join(SnapshotDir, name), version), "archive")
+					if err := ActivateBackup(name); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := operation.remove("old"); err != nil {
+					t.Fatal(err)
+				}
+				cfg, err := os.ReadFile(GrubCfgOutput)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if strings.Contains(string(cfg), "--id "+backupIDForName("old")) || !strings.Contains(string(cfg), "search --file --set=root "+grubVisiblePath(filepath.Join(EfiDir, "keep"))) {
+					t.Fatalf("unexpected regenerated GRUB: %s", cfg)
+				}
+				for _, path := range []string{keep, running, packaged, unmarked} {
+					if _, err := os.Stat(path); err != nil {
+						t.Fatalf("required modules removed %s: %v", path, err)
+					}
+				}
+				if shared {
+					if len(removals) != 0 {
+						t.Fatalf("shared DKMS removed: %v", removals)
+					}
+				} else {
+					if _, err := os.Stat(old); !os.IsNotExist(err) {
+						t.Fatalf("unused modules retained: %v", err)
+					}
+					want := "remove -m driver -v 1.0 -k " + oldVersion
+					if len(removals) != 1 || removals[0] != want {
+						t.Fatalf("DKMS removal=%v, want %s", removals, want)
+					}
+				}
+				if operation.name == "delete" {
+					if dirExists(filepath.Join(SnapshotDir, "old")) {
+						t.Fatal("snapshot not deleted")
+					}
+				} else {
+					if !dirExists(filepath.Join(SnapshotDir, "old")) {
+						t.Fatal("snapshot not retained")
+					}
+				}
+				if shared {
+					if err := DeleteBackup("keep"); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := os.Stat(old); !os.IsNotExist(err) {
+						t.Fatalf("shared modules retained after last entry: %v", err)
+					}
+					if len(removals) != 1 || removals[0] != "remove -m driver -v 1.0 -k "+oldVersion {
+						t.Fatalf("final shared DKMS cleanup: %v", removals)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestCleanupRemovalUnknownChainloaders(t *testing.T) {
+	for _, loader := range []string{
+		"bootnext 0000",
+		"chainloader /EFI/Linux/recovery.efi", "chainloader /EFI/arch/grubx64.efi",
+		"chainloader /EFI/BOOT/BOOTX64.EFI", "chainloader +1", "chainloader $loader",
+		"chainloader /EFI/Microsoft/Boot/bootmgfw.efi\n linux /vmlinuz-6.1.0-old",
+		"chainloader /EFI/Microsoft/Boot/bootmgfw.efi\n source /other.cfg",
+		"chainloader /EFI/Microsoft/Boot/bootmgfw.efi\n chainloader /EFI/Linux/other.efi",
+		"chainloader /EFI/Microsoft/Boot/bootmgfw.efi\n search --fs-uuid --set=root win;linux${IFS}/vmlinuz",
+	} {
+		for _, operation := range []struct {
+			name   string
+			remove func(string) error
+		}{{"deactivate", DeactivateBackup}, {"delete", DeleteBackup}} {
+			t.Run(operation.name+"/"+loader, func(t *testing.T) {
+				setupModuleCleanupTest(t)
+				setupCleanupGeneratedGRUB(t, "menuentry 'Windows Boot Manager' {\n "+loader+"\n}\n")
+				version := "6.1.0-old"
+				path := makeMarkedModules(t, version)
+				makeVersionedBootableBackup(t, SnapshotDir, "old", version)
+				writeFileWithContent(t, archivedModuleImagePath(filepath.Join(SnapshotDir, "old"), version), "archive")
+				if err := ActivateBackup("old"); err != nil {
+					t.Fatal(err)
+				}
+				if err := operation.remove("old"); err == nil || !strings.Contains(err.Error(), "cleanup incomplete") {
+					t.Fatalf("unknown loader must defer cleanup: %v", err)
+				}
+				if _, err := os.Stat(path); err != nil {
+					t.Fatalf("unknown loader's modules removed: %v", err)
+				}
+				entries, err := ListGrubEntries()
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("removal did not finish: %v %v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+func TestCleanupRemovalFileSearchProtectsAlternateFilesystem(t *testing.T) {
+	base := setupModuleCleanupTest(t)
+	setupCleanupGeneratedGRUB(t, "")
+	oldVersion, keepVersion := "6.1.0-old", "6.2.0-keep"
+	old := makeMarkedModules(t, oldVersion)
+	keep := makeMarkedModules(t, keepVersion)
+	for _, item := range []struct{ name, version string }{{"old", oldVersion}, {"keep", keepVersion}} {
+		makeVersionedBootableBackup(t, SnapshotDir, item.name, item.version)
+		writeFileWithContent(t, archivedModuleImagePath(filepath.Join(SnapshotDir, item.name), item.version), "archive")
+		if err := ActivateBackup(item.name); err != nil {
+			t.Fatal(err)
+		}
+	}
+	other := t.TempDir()
+	// The same GRUB-visible search path exists on a second filesystem, but
+	// its image contains a different kernel despite having the same filename.
+	ref := grubVisiblePath(filepath.Join(EfiDir, "keep", "vmlinuz-"+keepVersion))
+	alternate := filepath.Join(other, strings.TrimPrefix(ref, "/"))
+	writeFileWithContent(t, alternate, "alternate kernel")
+	writeFileWithContent(t, mountInfoPath, "1 0 0:1 / / rw - ext4 root rw\n2 1 0:2 / "+EfiDir+" rw - vfat esp rw\n3 1 0:3 / "+other+" rw - vfat other rw\n")
+	moduleCleanupCommand = func(name string, args ...string) ([]byte, error) {
+		if name == "file" {
+			if args[len(args)-1] == alternate {
+				return []byte("Linux kernel version " + oldVersion + "\n"), nil
+			}
+			return []byte("Linux kernel version " + keepVersion + "\n"), nil
+		}
+		return base(name, args...)
+	}
+	if err := DeleteBackup("old"); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{old, keep} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("file search target modules removed %s: %v", path, err)
+		}
 	}
 }

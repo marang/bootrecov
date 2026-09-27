@@ -52,9 +52,11 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 
 The archived module SquashFS makes the backup complete and restorable. Activation stays conservative: if the matching `/usr/lib/modules/<version>` tree already exists, Bootrecov leaves it alone; if it is missing and the snapshot has an archive, Bootrecov restores that exact tree before adding the bootloader entry.
 
-Restored module trees carry an ownership marker. On Arch, deactivation, backup deletion, entry removal, and reconciliation can remove a marked tree after its last recovery entry is gone. Cleanup keeps the running kernel, package-owned files, and trees referenced by remaining GRUB or BLS entries, including manually maintained entries. Bootrecov serializes these operations across processes and holds the Arch package lock while cleaning. Other distributions retain marked trees until package-safe cleanup is supported. Cleanup waits until after an active package transaction and runs on the next removal or reconciliation. Older, unmarked directories are left for manual inspection.
+Restored module trees carry an inode-bound ownership marker. On Arch, deactivation, backup deletion, entry removal, and reconciliation can remove a marked tree after its last recovery entry is gone, together with DKMS builds for that kernel version. Cleanup keeps the running kernel, package-owned files, and trees referenced by remaining GRUB or BLS entries, including manually maintained entries. Snapshots without an archived module tree also retain their matching live modules. Bootrecov serializes these operations across processes and holds the Arch package lock while cleaning. Other distributions retain marked trees until package-safe cleanup is supported. Cleanup waits until after an active package transaction and runs on the next removal or reconciliation. Older, unmarked directories are left for manual inspection.
 
-Cleanup does not execute GRUB scripts. It retains modules when a selected boot device or configuration reference cannot be proved from the mounted filesystems, or when a script uses unsupported dynamic paths. `chainloader` entries, including Windows dual-boot entries, and `search --file` also defer cleanup. A completed removal or reconciliation is reported separately from any subsequent module-cleanup warning.
+Cleanup does not execute GRUB scripts. Standard GRUB header variable assignments are accepted; changes to the GRUB root or source directories still require proof or defer cleanup. Standard Windows menuentries with the literal chainloader target `/EFI/Microsoft/Boot/bootmgfw.efi` (case insensitive, optionally prefixed with `($root)`) and recognized setup commands do not block cleanup, even when the Windows partition is unmounted. Recognition uses the conventional path, not the menu title or executable signature. Unknown chainloaders, including generic EFI paths, GRUB/shim, UKIs, legacy `+1` targets, dynamic targets, and GRUB BootNext selections still defer cleanup.
+
+Bootrecov's own generated `search --file` entries are checked against the active recovery and its actual mirror kernel image. Matching images on other mounted filesystems also protect their kernel versions, since GRUB's file search can select those copies. This inspection covers mounted, reachable files; it cannot inspect duplicate paths on unmounted filesystems. A remaining recovery protects its kernel version without preventing cleanup of a different unused kernel; recoveries sharing a kernel version retain the shared modules. Other file searches, unresolved boot devices or configuration references, and unsupported dynamic scripts still defer cleanup. A completed removal or reconciliation is reported separately from any subsequent module-cleanup warning.
 
 ## Storage Model
 
@@ -136,7 +138,7 @@ Normal operation usually requires root because Bootrecov writes to:
 | Syslinux / extlinux | Not supported yet |
 | U-Boot | Not supported yet |
 
-Runtime detection uses `/etc/os-release`, mount information from `/proc/self/mountinfo`, visible boot artifacts, and existing bootloader files. Bootrecov can detect common layouts such as `/boot/efi`, `/efi`, and ESP-at-`/boot`; explicit overrides still win for unusual systems or tests:
+Runtime detection uses `/etc/os-release`, mount information from `/proc/self/mountinfo`, visible boot artifacts, and existing bootloader files. GRUB paths use the most specific covering mount, including the root mount and Btrfs subvolume roots. Bootrecov can detect common layouts such as `/boot/efi`, `/efi`, and ESP-at-`/boot`; explicit overrides still win for unusual systems or tests:
 
 ```bash
 BOOTRECOV_PLATFORM=ubuntu
@@ -530,6 +532,7 @@ Explicit GRUB platform gates:
 
 ```bash
 make test-bootvm-ubuntu-grub
+make test-bootvm-arch-grub-cleanup
 make test-bootvm-debian-grub
 make test-bootvm-fedora-grub-bls
 make test-bootvm-grub-matrix
@@ -644,6 +647,7 @@ Useful targets:
 - `make fmt`: run `gofmt`
 - `make test`: run vet, tests, race tests, and coverage
 - `make test-bootvm`: run the rootless VM integration test
+- `make test-bootvm-arch-grub-cleanup`: boot an Arch recovery through GRUB and check restored modules and real DKMS cleanup
 - `make test-bootvm-ubuntu-grub`: run the explicit Ubuntu + GRUB VM gate
 - `make test-bootvm-debian-grub`: run the explicit Debian + GRUB VM gate
 - `make test-bootvm-fedora-grub-bls`: run the explicit Fedora + GRUB/BLS VM gate
