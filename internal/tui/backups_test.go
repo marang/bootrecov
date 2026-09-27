@@ -32,6 +32,9 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
+	oldRecoveryLockDir := RecoveryLockDir
+	RecoveryLockDir = filepath.Join(filepath.Dir(grub), "recovery-lock")
+	t.Cleanup(func() { RecoveryLockDir = oldRecoveryLockDir })
 	oldBoot, oldSnap, oldEFI, oldGrub, oldGrubCfg, oldMkconfig, oldAutoGrub, oldModules, oldHookPath, oldPostHookPath, oldMkinitcpioInstall, oldMkinitcpioHook, oldMkinitcpioConf, oldMkinitcpioBin, oldBLSEntries, oldDNF5Actions, oldDNF4PreActions, oldDNF4PostActions, oldDracutModule, oldDracutBin, oldUpdateInitramfs, oldRclone, oldRequire, oldMksquashfs, oldRequireMksquashfs, oldUnsquashfs, oldRequireUnsquashfs, oldRequireEFIMount, oldCreateImage, oldRestoreModules, oldStatfs, oldMountInfo, oldKernelCmdline, oldExecLookPath, oldOSReleasePath, oldGrubDefaultPath, oldPlatformOverride, oldBootloaderOverride, oldActivePlatformID, oldActivePlatformName, oldActiveHookSupported, oldActiveBootloaderID, oldActiveBootloaderName, oldActiveWarnings :=
 		BootDir, SnapshotDir, EfiDir, GrubCustom, GrubCfgOutput, GrubMkconfig, AutoUpdateGrub, RootModulesDir, PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath, MkinitcpioConfPath, MkinitcpioBin, BLSEntriesDir, DNF5ActionsPath, DNF4PreActionsPath, DNF4PostActionsPath, DracutModuleDir, DracutBin, UpdateInitramfs, RcloneBin, RequireRclone, MksquashfsBin, RequireMksquashfs, UnsquashfsBin, RequireUnsquashfs, RequireEFIMount, createModuleImageFunc, restoreModuleTreeFunc, statfsFunc, mountInfoPath, kernelCmdlinePath, execLookPath, OSReleasePath, GrubDefaultPath, PlatformOverride, BootloaderOverride, activePlatformID, activePlatformName, activeHookSupported, activeBootloaderID, activeBootloaderName, activeWarnings
 	BootDir, SnapshotDir, EfiDir, GrubCustom = boot, snap, efi, grub
@@ -1504,6 +1507,18 @@ test -f "$newroot/custom/modules/%s/modules.dep"
 	if err != nil {
 		t.Fatalf("runtime hook did not restore modules: %v: %s", err, strings.TrimSpace(string(out)))
 	}
+	tree := filepath.Join(newRoot, "custom", "modules", version)
+	info, err := os.Stat(tree)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker, err := os.ReadFile(filepath.Join(tree, restoredModuleMarker))
+	if err != nil {
+		t.Fatalf("runtime restore did not mark its module tree: %v", err)
+	}
+	if want := fmt.Sprintf("%s\n%d\n", version, info.Sys().(*syscall.Stat_t).Ino); string(marker) != want {
+		t.Fatalf("runtime restore marker = %q, want %q", marker, want)
+	}
 }
 
 func TestRenderMkinitcpioRuntimeHookHasShellSyntax(t *testing.T) {
@@ -2329,6 +2344,45 @@ func TestDeleteBackupRemovesBothCopiesAndGrubEntry(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected no grub entries after delete, got %#v", entries)
+	}
+}
+
+func TestRecoveryEntryRemovalCleansBootrecovRestoredModules(t *testing.T) {
+	for _, action := range []string{"remove entry", "deactivate", "delete backup"} {
+		t.Run(action, func(t *testing.T) {
+			setupModuleCleanupTest(t)
+			version := "6.1.0-old"
+			makeVersionedBootableBackup(t, SnapshotDir, "old", version)
+			writeFile(t, archivedModuleImagePath(filepath.Join(SnapshotDir, "old"), version))
+			moduleTree := makeMarkedModules(t, version)
+			if err := ActivateBackup("old"); err != nil {
+				t.Fatal(err)
+			}
+			switch action {
+			case "remove entry":
+				if err := RemoveGrubEntry(backupIDForName("old")); err != nil {
+					t.Fatal(err)
+				}
+			case "deactivate":
+				if err := DeactivateBackup("old"); err != nil {
+					t.Fatal(err)
+				}
+			case "delete backup":
+				if err := DeleteBackup("old"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := os.Stat(moduleTree); !os.IsNotExist(err) {
+				t.Fatalf("unused restored modules still exist: %v", err)
+			}
+			entries, err := ListGrubEntries()
+			if err != nil || len(entries) != 0 {
+				t.Fatalf("recovery entry remains: %v, %v", entries, err)
+			}
+			if action != "delete backup" && !fileExists(archivedModuleImagePath(filepath.Join(SnapshotDir, "old"), version)) {
+				t.Fatal("snapshot archive needed for reactivation was removed")
+			}
+		})
 	}
 }
 

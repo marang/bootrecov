@@ -15,10 +15,13 @@ Bootrecov is intentionally conservative because it writes to boot-critical locat
 - TUI and CLI invocations require explicit risk acknowledgement via prompt, flag, or environment variable.
 - Activation restores an archived `/usr/lib/modules/<version>` tree when the live tree is missing and the snapshot contains a matching SquashFS archive.
 - Activation and reconcile do not overwrite an existing `/usr/lib/modules/<version>` tree.
+- On Arch, module cleanup only considers trees marked as restored by Bootrecov, and preserves a running kernel, installed package files, and modules referenced by remaining GRUB or BLS entries, including manual entries. Unmarked legacy trees and restored trees on other distributions remain in place.
+- Cleanup retains modules if a GRUB device or configuration reference cannot be proved from the mounted filesystems; it does not execute GRUB scripts to infer their runtime state.
+- Bootrecov serializes entry, snapshot, and module-tree changes across processes; Arch cleanup is deferred while a package transaction is active.
 - Activation refuses a snapshot when the kernel version is known, `/usr/lib/modules/<version>` is missing, and the snapshot has no matching archived module tree.
 - Internal `.bootrecov` metadata is excluded from active boot mirrors.
 - Reconcile removes inactive boot mirrors but preserves an already bootable active GRUB entry if refreshing its boot mirror fails transiently.
-- There is no automatic pruning, so Bootrecov does not delete older snapshots without an explicit delete command.
+- There is no automatic snapshot pruning, so Bootrecov does not delete older snapshots without an explicit delete command.
 
 ## High-Risk Paths
 

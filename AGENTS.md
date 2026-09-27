@@ -31,6 +31,8 @@ Important behavior:
 - module archives are not copied into active boot mirrors
 - activation restores an archived `/usr/lib/modules/<kernel-version>` tree automatically when the live root module tree is missing
 - activation must not overwrite an existing `/usr/lib/modules/<kernel-version>` tree
+- Bootrecov marks newly restored module trees and cleans them up on Arch after their last recovery entry is removed when kernel, package, and ownership checks pass; unsupported distributions and unmarked trees remain untouched
+- entry, snapshot, and module-tree mutations share a cross-process lock under `/run/lock/bootrecov`; module cleanup holds the Arch package lock and is deferred during package transactions
 - GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
 - Fedora-family GRUB/BLS systems use Bootrecov-owned BLS entries under `/boot/loader/entries` when the active mirror is on the same boot filesystem
 - GRUB config is regenerated with `grub-mkconfig -o /boot/grub/grub.cfg` after GRUB entry changes
@@ -51,6 +53,7 @@ Important behavior:
 - Snapshot creation from `/boot`
 - Snapshot-side SquashFS archiving of matching root kernel modules when available
 - Root module tree compatibility checks and archived module restoration for activated kernel snapshots
+- Arch-only ownership-checked cleanup of restored root module trees after recovery entry removal
 - active boot mirror activation and deactivation
 - GRUB custom and Fedora/BLS entry add, remove, and parse
 - Platform and bootloader detection with environment overrides
@@ -124,6 +127,7 @@ Runtime assumptions:
 - `rclone`
 - `grub-mkconfig`
 - `mksquashfs` and `unsquashfs` from Arch package `squashfs-tools`
+- `file` on Arch for identifying primary kernel versions during restored module cleanup
 
 The TUI performs a startup dependency check and exits early with a clear error if required runtime tools are missing.
 

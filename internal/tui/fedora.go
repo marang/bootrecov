@@ -325,7 +325,7 @@ depends() {
 }
 
 install() {
-    inst_multiple unsquashfs mkdir mktemp mv rm chown cat uname
+    inst_multiple unsquashfs mkdir mktemp mv rm chown cat uname stat
     inst_hook pre-pivot 95 "$moddir/bootrecov-restore.sh"
 }
 `
@@ -400,6 +400,16 @@ if [ -d "${target}" ]; then
     return 0 2>/dev/null || exit 0
 fi
 
+inode="$(stat -c '%%i' "${staging}" 2>/dev/null)"
+case "${inode}" in
+    ''|*[!0-9]*) echo "bootrecov: cannot identify restored module directory" >&2; rm -rf "${staging}"; return 0 2>/dev/null || exit 0 ;;
+esac
+if ! rm -f "${staging}/%s" || ! printf '%%s\n%%s\n' "${version}" "${inode}" > "${staging}/%s"; then
+    echo "bootrecov: cannot mark restored modules" >&2
+    rm -rf "${staging}"
+    return 0 2>/dev/null || exit 0
+fi
+
 if mv "${staging}" "${target}"; then
     chown -R 0:0 "${target}" 2>/dev/null || true
     echo "bootrecov: restored modules for ${version} from ${name}" >&2
@@ -407,7 +417,7 @@ else
     echo "bootrecov: failed to move restored modules into ${target}" >&2
     rm -rf "${staging}"
 fi
-`, shellSingleQuote(rootModulesDir))
+`, shellSingleQuote(rootModulesDir), restoredModuleMarker, restoredModuleMarker)
 }
 
 func regenerateDracutInitramfs() error {

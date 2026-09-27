@@ -351,3 +351,23 @@ func TestDoctorPlatformRowsShowUnsupportedDebianHookBackend(t *testing.T) {
 		}
 	}
 }
+
+func TestHookReconcileActiveReportsCompletedCleanupWarning(t *testing.T) {
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return []tui.BootBackup{{Name: "active"}}, []tui.GrubEntry{}, &tui.ReconcileCleanupWarning{Cause: errors.New("package database unavailable")}
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+	var output bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"hook", "reconcile-active"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("completed reconcile cleanup warning should not fail package transaction: %v", err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "reconciled 1 backups and 0 bootloader entries") || !strings.Contains(got, "restored module cleanup incomplete after package transaction: package database unavailable") || strings.Contains(got, "reconcile failed") {
+		t.Fatalf("hook misreported completed reconcile: %q", got)
+	}
+}

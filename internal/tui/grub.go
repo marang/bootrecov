@@ -52,6 +52,10 @@ func grubVisiblePath(hostPath string) string {
 
 // AddGrubEntry adds one GRUB menuentry for the EFI copy of a fully synced backup.
 func AddGrubEntry(b BootBackup) error {
+	return withRecoveryOperation(func() error { return addGrubEntry(b) })
+}
+
+func addGrubEntry(b BootBackup) error {
 	if err := ensureSupportedBootloader(); err != nil {
 		return err
 	}
@@ -183,6 +187,20 @@ func ensureGrubFile() error {
 
 // RemoveGrubEntry removes the entry block matching the GRUB id.
 func RemoveGrubEntry(id string) error {
+	return withRecoveryOperation(func() error { return removeGrubEntryAndCleanup(id) })
+}
+
+func removeGrubEntryAndCleanup(id string) error {
+	if err := removeGrubEntry(id); err != nil {
+		return err
+	}
+	if err := cleanupRestoredModuleTrees(); err != nil {
+		return fmt.Errorf("bootloader entry removed; restored module cleanup incomplete: %w", err)
+	}
+	return nil
+}
+
+func removeGrubEntry(id string) error {
 	if err := ensureSupportedBootloader(); err != nil {
 		return err
 	}
@@ -306,7 +324,7 @@ func removeStaleGrubEntries(backups []BootBackup, preserveByName map[string]stru
 	for _, e := range entries {
 		expectedPath, ok := valid[e.ID]
 		if !ok || e.BackupPath != expectedPath {
-			if err := RemoveGrubEntry(e.ID); err != nil {
+			if err := removeGrubEntry(e.ID); err != nil {
 				return err
 			}
 		}

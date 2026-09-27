@@ -322,11 +322,15 @@ func newHookCmd() *cobra.Command {
 		Short:  "Refresh active recovery entries from a package-manager hook",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			backups, entries, err := syncBackupsAndGrub()
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "bootrecov warning: active fallback reconcile failed after package transaction: %v\n", err)
+			var warning *tui.ReconcileCleanupWarning
+			if err != nil && !errors.As(err, &warning) {
+				fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: active fallback reconcile failed after package transaction: %v\n", err)
 				return nil
 			}
-			fmt.Fprintf(os.Stderr, "bootrecov: reconciled %d backups and %d bootloader entries after package transaction\n", len(backups), len(entries))
+			fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov: reconciled %d backups and %d bootloader entries after package transaction\n", len(backups), len(entries))
+			if warning != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: restored module cleanup incomplete after package transaction: %v\n", warning.Cause)
+			}
 			return nil
 		},
 	}

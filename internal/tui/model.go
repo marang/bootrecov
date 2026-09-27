@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -602,24 +603,33 @@ func runBackupTask(output chan<- string) tea.Cmd {
 func runToggleBackupTask(kind taskKind, name string) taskCmdFactory {
 	return func(output chan<- string) tea.Cmd {
 		return taskCmdWithOutput(output, func() tea.Msg {
+			var cleanupWarning string
 			if kind == taskDeactivate {
 				if err := DeactivateBackup(name); err != nil {
-					return taskDoneMsg{task: kind, mode: modeBackups, errStatus: fmt.Sprintf("deactivate failed: %v", err)}
+					var completed bool
+					cleanupWarning, completed = completedCleanupWarning(err, "backup deactivated")
+					if !completed {
+						return taskDoneMsg{task: kind, mode: modeBackups, errStatus: fmt.Sprintf("deactivate failed: %v", err)}
+					}
 				}
 			} else {
 				if err := ActivateBackup(name); err != nil {
 					return taskDoneMsg{task: kind, mode: modeBackups, errStatus: fmt.Sprintf("activate failed: %v", err)}
 				}
 			}
-			backups, entries, errStatus := refreshTaskState()
-			if errStatus != "" {
-				return taskDoneMsg{task: kind, mode: modeBackups, errStatus: errStatus}
-			}
 			verb := "activated"
 			if kind == taskDeactivate {
 				verb = "deactivated"
 			}
-			return taskDoneMsg{task: kind, mode: modeBackups, backups: backups, entries: entries, cursorName: name, status: fmt.Sprintf("%s: %s", verb, name)}
+			status := fmt.Sprintf("%s: %s", verb, name)
+			if cleanupWarning != "" {
+				status += "; restored module cleanup incomplete: " + cleanupWarning
+			}
+			backups, entries, errStatus := refreshTaskState()
+			if errStatus != "" {
+				return taskDoneMsg{task: kind, mode: modeBackups, errStatus: status + "; " + errStatus}
+			}
+			return taskDoneMsg{task: kind, mode: modeBackups, backups: backups, entries: entries, cursorName: name, status: status}
 		})
 	}
 }
@@ -627,15 +637,20 @@ func runToggleBackupTask(kind taskKind, name string) taskCmdFactory {
 func runReconcileTask(output chan<- string) tea.Cmd {
 	return taskCmdWithOutput(output, func() tea.Msg {
 		backups, entries, err := SyncBackupsAndGrub()
+		status := fmt.Sprintf("reconcile complete. active EFI mirrors refreshed and %s cleaned", GrubCustom)
 		if err != nil {
-			return taskDoneMsg{task: taskReconcile, mode: modeBackups, errStatus: fmt.Sprintf("sync failed: %v", err)}
+			var warning *ReconcileCleanupWarning
+			if !errors.As(err, &warning) {
+				return taskDoneMsg{task: taskReconcile, mode: modeBackups, errStatus: fmt.Sprintf("sync failed: %v", err)}
+			}
+			status += "; restored module cleanup incomplete: " + warning.Cause.Error()
 		}
 		return taskDoneMsg{
 			task:    taskReconcile,
 			mode:    modeBackups,
 			backups: backups,
 			entries: entries,
-			status:  fmt.Sprintf("reconcile complete. active EFI mirrors refreshed and %s cleaned", GrubCustom),
+			status:  status,
 		}
 	})
 }
@@ -643,14 +658,23 @@ func runReconcileTask(output chan<- string) tea.Cmd {
 func runDeleteTask(name string) taskCmdFactory {
 	return func(output chan<- string) tea.Cmd {
 		return taskCmdWithOutput(output, func() tea.Msg {
+			var cleanupWarning string
 			if err := DeleteBackup(name); err != nil {
-				return taskDoneMsg{task: taskDelete, mode: modeBackups, errStatus: fmt.Sprintf("delete failed: %v", err)}
+				var completed bool
+				cleanupWarning, completed = completedCleanupWarning(err, "backup deleted")
+				if !completed {
+					return taskDoneMsg{task: taskDelete, mode: modeBackups, errStatus: fmt.Sprintf("delete failed: %v", err)}
+				}
+			}
+			status := fmt.Sprintf("backup deleted: %s", name)
+			if cleanupWarning != "" {
+				status += "; restored module cleanup incomplete: " + cleanupWarning
 			}
 			backups, entries, errStatus := refreshTaskState()
 			if errStatus != "" {
-				return taskDoneMsg{task: taskDelete, mode: modeBackups, errStatus: errStatus}
+				return taskDoneMsg{task: taskDelete, mode: modeBackups, errStatus: status + "; " + errStatus}
 			}
-			return taskDoneMsg{task: taskDelete, mode: modeBackups, backups: backups, entries: entries, status: fmt.Sprintf("backup deleted: %s", name)}
+			return taskDoneMsg{task: taskDelete, mode: modeBackups, backups: backups, entries: entries, status: status}
 		})
 	}
 }
@@ -680,16 +704,35 @@ func runHookToggleTask(kind taskKind) taskCmdFactory {
 func runRemoveEntryTask(id string) taskCmdFactory {
 	return func(output chan<- string) tea.Cmd {
 		return taskCmdWithOutput(output, func() tea.Msg {
+			var cleanupWarning string
 			if err := RemoveGrubEntry(id); err != nil {
-				return taskDoneMsg{task: taskRemoveEntry, mode: modeEntries, errStatus: fmt.Sprintf("remove failed: %v", err)}
+				var completed bool
+				cleanupWarning, completed = completedCleanupWarning(err, "bootloader entry removed")
+				if !completed {
+					return taskDoneMsg{task: taskRemoveEntry, mode: modeEntries, errStatus: fmt.Sprintf("remove failed: %v", err)}
+				}
+			}
+			status := "entry removed"
+			if cleanupWarning != "" {
+				status += "; restored module cleanup incomplete: " + cleanupWarning
 			}
 			backups, entries, errStatus := refreshTaskState()
 			if errStatus != "" {
-				return taskDoneMsg{task: taskRemoveEntry, mode: modeEntries, errStatus: errStatus}
+				return taskDoneMsg{task: taskRemoveEntry, mode: modeEntries, errStatus: status + "; " + errStatus}
 			}
-			return taskDoneMsg{task: taskRemoveEntry, mode: modeEntries, backups: backups, entries: entries, status: "entry removed"}
+			return taskDoneMsg{task: taskRemoveEntry, mode: modeEntries, backups: backups, entries: entries, status: status}
 		})
 	}
+}
+
+// These errors are returned only after the requested mutation has completed.
+// Keep a genuine mutation failure on the error path so the TUI never claims
+// that a backup or entry was removed when it may still be present.
+func completedCleanupWarning(err error, completed string) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	return strings.CutPrefix(err.Error(), completed+"; restored module cleanup incomplete: ")
 }
 
 func refreshTaskState() ([]BootBackup, []GrubEntry, string) {
@@ -702,6 +745,9 @@ func refreshTaskState() ([]BootBackup, []GrubEntry, string) {
 		return nil, nil, fmt.Sprintf("refresh failed: %v", entriesErr)
 	}
 	markGrubFlags(backups, entries)
+	if entries == nil {
+		entries = []GrubEntry{}
+	}
 	return backups, entries, ""
 }
 
@@ -767,6 +813,10 @@ func statusActivityLine(m Model) string {
 	}
 	if strings.TrimSpace(m.status) == "" {
 		return ""
+	}
+	if completed, warning, ok := strings.Cut(m.status, "; restored module cleanup incomplete: "); ok {
+		return activityLineWithText(m.activityWidth, completed, completeActivityBar, statusTextStyle) + "\n" +
+			warnStyle.Render(truncateVisible("module cleanup incomplete: "+warning, m.activityWidth))
 	}
 	return activityLineWithText(m.activityWidth, m.status, completeActivityBar, statusTextStyle)
 }

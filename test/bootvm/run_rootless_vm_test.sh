@@ -649,7 +649,7 @@ sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov doctor >/tmp/bootrecov-doctor.log
 sudo cat /tmp/bootrecov-doctor.log | sed 's/^/[doctor] /'
 DOCTOR_PLATFORM="$(awk '$1 == "core" && $2 == "platform" {print $4}' /tmp/bootrecov-doctor.log)"
 DOCTOR_BOOTLOADER="$(awk '$1 == "core" && $2 == "bootloader" {print $4}' /tmp/bootrecov-doctor.log)"
-DOCTOR_HOOK_SUPPORTED="$(awk '$1 == "core" && $2 == "package-hooks" {print $4}' /tmp/bootrecov-doctor.log)"
+DOCTOR_HOOK_SUPPORTED="$(awk '$1 == "core" && $2 == "package-hooks" {print $NF}' /tmp/bootrecov-doctor.log)"
 if [[ "${DOCTOR_PLATFORM}" != "${EXPECTED_PLATFORM}" ]]; then
   echo "[guest] expected platform ${EXPECTED_PLATFORM}, got ${DOCTOR_PLATFORM}" >&2
   exit 1

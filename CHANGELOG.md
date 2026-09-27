@@ -22,6 +22,17 @@
 - Fedora dracut restore now recognizes Bootrecov fallback boots from `BOOT_IMAGE` paths when GRUB/BLS does not preserve custom kernel markers.
 - Debian VM gate now finds GRUB tools installed under `/usr/sbin` in non-login SSH commands.
 
+## v0.4.11 - 2026-09-27
+
+### Fixed
+
+- On Arch, unused module trees restored by Bootrecov can be cleaned up after recovery entry removal, deactivation, deletion, or reconciliation. Ownership markers, running kernels, installed packages, and boot references protect trees that must remain.
+- Recovery mutations are serialized across processes; cleanup holds the pacman database lock and defers during package transactions.
+- GRUB configuration sources and selected mounted boot filesystems are inspected conservatively. Unresolved references, `chainloader` entries (including Windows), and `search --file` defer module cleanup.
+- The TUI and package hook distinguish completed recovery changes from subsequent cleanup warnings and return current entry and module status.
+- Arch packaging and startup checks include the `file` dependency; other platforms do not require it for this Arch-only cleanup.
+- The Ubuntu/Debian VM gate reads the package-hook diagnostic correctly when its status contains multiple words.
+
 ## v0.4.6 - 2026-05-20
 
 ### Changed

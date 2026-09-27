@@ -33,6 +33,7 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - Install Fedora DNF action hooks and a dracut boot-time restore module for Fedora-family GRUB systems.
 - Archive the matching `/usr/lib/modules/<kernel-version>` tree as compressed SquashFS metadata inside the snapshot source.
 - Restore archived `/usr/lib/modules/<kernel-version>` trees automatically during activation when the live tree is missing.
+- Clean up module trees restored by Bootrecov after their last recovery entry is removed, when no installed or running kernel needs them.
 - Validate snapshot names before path-sensitive operations.
 - Verify the configured boot mirror root before activation or reconcile mutates boot state, so it does not silently write into an unmounted `/boot/efi` or `/boot` directory.
 - Report detected platform, bootloader, paths, and support status with `bootrecov doctor`.
@@ -50,6 +51,10 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - It is not a replacement for a rescue USB or real system backups.
 
 The archived module SquashFS makes the backup complete and restorable. Activation stays conservative: if the matching `/usr/lib/modules/<version>` tree already exists, Bootrecov leaves it alone; if it is missing and the snapshot has an archive, Bootrecov restores that exact tree before adding the bootloader entry.
+
+Restored module trees carry an ownership marker. On Arch, deactivation, backup deletion, entry removal, and reconciliation can remove a marked tree after its last recovery entry is gone. Cleanup keeps the running kernel, package-owned files, and trees referenced by remaining GRUB or BLS entries, including manually maintained entries. Bootrecov serializes these operations across processes and holds the Arch package lock while cleaning. Other distributions retain marked trees until package-safe cleanup is supported. Cleanup waits until after an active package transaction and runs on the next removal or reconciliation. Older, unmarked directories are left for manual inspection.
+
+Cleanup does not execute GRUB scripts. It retains modules when a selected boot device or configuration reference cannot be proved from the mounted filesystems, or when a script uses unsupported dynamic paths. `chainloader` entries, including Windows dual-boot entries, and `search --file` also defer cleanup. A completed removal or reconciliation is reported separately from any subsequent module-cleanup warning.
 
 ## Storage Model
 
@@ -78,6 +83,7 @@ Runtime:
 - `rclone`
 - `grub-mkconfig`
 - `mksquashfs` and `unsquashfs` from `squashfs-tools`
+- `file` on Arch for identifying primary kernel versions during restored module cleanup
 - `dracut` on Fedora-family systems when installing hooks
 - DNF action plugin support on Fedora-family systems when installing hooks:
   - DNF5: `libdnf5-plugin-actions`
@@ -379,13 +385,14 @@ Activation performs these steps:
 7. Add a Bootrecov bootloader entry. On Fedora/BLS systems this is a Bootrecov-owned BLS file when usable; otherwise it is a GRUB custom menu entry.
 8. Regenerate GRUB config when the selected entry backend requires it.
 
-Deactivation removes the bootloader entry, removes the active boot mirror, and regenerates the bootloader config when the backend requires it.
+Deactivation removes the bootloader entry, removes the active boot mirror, and regenerates the bootloader config when the backend requires it. It also checks whether Bootrecov can clean up a restored module tree that is no longer needed.
 
 Reconcile is intentionally conservative:
 
 - Active snapshots are refreshed into EFI.
 - Inactive boot mirrors are removed.
 - Stale bootloader entries are removed.
+- Unneeded module trees restored by Bootrecov are cleaned up when their ownership and safety checks pass.
 - Entries for known missing root module trees are treated as not boot-ready.
 - A previously bootable entry is preserved if refreshing its active boot mirror fails transiently.
 
@@ -617,6 +624,7 @@ AUR runtime dependencies include:
 - `rclone`
 - `grub`
 - `squashfs-tools`
+- `file`
 
 Required GitHub secret for AUR publishing:
 

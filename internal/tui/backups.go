@@ -52,41 +52,42 @@ type GrubEntry struct {
 }
 
 var (
-	BootDir               = "/boot"
-	SnapshotDir           = "/var/backups/bootrecov-snapshots"
-	EfiDir                = "/boot/efi/bootrecov-snapshots"
-	GrubCustom            = "/etc/grub.d/41_bootrecov_snapshots"
-	GrubCfgOutput         = "/boot/grub/grub.cfg"
-	GrubMkconfig          = "grub-mkconfig"
-	AutoUpdateGrub        = true
-	RootModulesDir        = "/usr/lib/modules"
-	PacmanHookPath        = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
-	PacmanPostHookPath    = "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook"
-	MkinitcpioInstallPath = "/usr/lib/initcpio/install/bootrecov"
-	MkinitcpioHookPath    = "/usr/lib/initcpio/hooks/bootrecov"
-	MkinitcpioConfPath    = "/etc/mkinitcpio.conf"
-	MkinitcpioBin         = "mkinitcpio"
-	BLSEntriesDir         = "/boot/loader/entries"
-	DNF5ActionsPath       = "/etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions"
-	DNF4PreActionsPath    = "/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action"
-	DNF4PostActionsPath   = "/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action"
-	DracutModuleDir       = "/usr/lib/dracut/modules.d/95bootrecov"
-	DracutBin             = "dracut"
-	UpdateInitramfs       = true
-	RcloneBin             = "rclone"
-	RequireRclone         = true
-	MksquashfsBin         = "mksquashfs"
-	RequireMksquashfs     = true
-	UnsquashfsBin         = "unsquashfs"
-	RequireUnsquashfs     = true
-	RequireEFIMount       = true
-	BackupProfile         = "full" // full|minimal
-	grubHeader            = "#!/bin/bash\n"
-	statfsFunc            = syscall.Statfs
-	mountInfoPath         = "/proc/self/mountinfo"
-	kernelCmdlinePath     = "/proc/cmdline"
-	createModuleImageFunc = createSquashFSModuleImage
-	restoreModuleTreeFunc = restoreSquashFSModuleTree
+	BootDir                     = "/boot"
+	SnapshotDir                 = "/var/backups/bootrecov-snapshots"
+	EfiDir                      = "/boot/efi/bootrecov-snapshots"
+	GrubCustom                  = "/etc/grub.d/41_bootrecov_snapshots"
+	GrubCfgOutput               = "/boot/grub/grub.cfg"
+	GrubMkconfig                = "grub-mkconfig"
+	AutoUpdateGrub              = true
+	RootModulesDir              = "/usr/lib/modules"
+	PacmanHookPath              = "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook"
+	PacmanPostHookPath          = "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook"
+	MkinitcpioInstallPath       = "/usr/lib/initcpio/install/bootrecov"
+	MkinitcpioHookPath          = "/usr/lib/initcpio/hooks/bootrecov"
+	MkinitcpioConfPath          = "/etc/mkinitcpio.conf"
+	MkinitcpioBin               = "mkinitcpio"
+	BLSEntriesDir               = "/boot/loader/entries"
+	DNF5ActionsPath             = "/etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions"
+	DNF4PreActionsPath          = "/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action"
+	DNF4PostActionsPath         = "/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action"
+	DracutModuleDir             = "/usr/lib/dracut/modules.d/95bootrecov"
+	DracutBin                   = "dracut"
+	UpdateInitramfs             = true
+	RcloneBin                   = "rclone"
+	RequireRclone               = true
+	MksquashfsBin               = "mksquashfs"
+	RequireMksquashfs           = true
+	UnsquashfsBin               = "unsquashfs"
+	RequireUnsquashfs           = true
+	RequireEFIMount             = true
+	BackupProfile               = "full" // full|minimal
+	grubHeader                  = "#!/bin/bash\n"
+	statfsFunc                  = syscall.Statfs
+	mountInfoPath               = "/proc/self/mountinfo"
+	kernelCmdlinePath           = "/proc/cmdline"
+	createModuleImageFunc       = createSquashFSModuleImage
+	restoreModuleTreeFunc       = restoreSquashFSModuleTree
+	chownRestoredModuleTreeFunc = chownTreeToRoot
 )
 
 const (
@@ -104,6 +105,10 @@ var backupNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 // EFI mirrors are created only when explicitly activated. The backup name is a
 // UTC timestamp.
 func CreateBootBackupNow() (BootBackup, error) {
+	return withRecoveryBackupOperation(createBootBackupNow)
+}
+
+func createBootBackupNow() (BootBackup, error) {
 	if err := checkSnapshotSpace(); err != nil {
 		return BootBackup{}, err
 	}
@@ -332,6 +337,7 @@ Exec = /usr/bin/env BOOTRECOV_ACCEPT_RISK=1 %s hook reconcile-active
 func renderMkinitcpioInstallHook() string {
 	return `build() {
     add_binary /usr/bin/unsquashfs
+    add_binary /usr/bin/stat
     add_runscript
 }
 
@@ -349,7 +355,7 @@ func renderMkinitcpioRuntimeHook() string {
 		rootModulesDir = "/usr/lib/modules"
 	}
 	return fmt.Sprintf(`run_latehook() {
-    local cmdline entry boot_image has_marker name version root_modules_dir archive modules_parent target staging
+    local cmdline entry boot_image has_marker name version root_modules_dir archive modules_parent target staging inode
 
     cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
     has_marker=0
@@ -413,6 +419,16 @@ func renderMkinitcpioRuntimeHook() string {
         return 0
     fi
 
+    inode="$(stat -c '%%i' "${staging}" 2>/dev/null)"
+    case "${inode}" in
+        ''|*[!0-9]*) echo "bootrecov: cannot identify restored module directory" >&2; rm -rf "${staging}"; return 0 ;;
+    esac
+    if ! rm -f "${staging}/%s" || ! printf '%%s\n%%s\n' "${version}" "${inode}" > "${staging}/%s"; then
+        echo "bootrecov: cannot mark restored modules" >&2
+        rm -rf "${staging}"
+        return 0
+    fi
+
     if mv "${staging}" "${target}"; then
         chown -R 0:0 "${target}" 2>/dev/null || true
         echo "bootrecov: restored modules for ${version} from ${name}" >&2
@@ -421,7 +437,7 @@ func renderMkinitcpioRuntimeHook() string {
         rm -rf "${staging}"
     fi
 }
-`, shellSingleQuote(rootModulesDir))
+`, shellSingleQuote(rootModulesDir), restoredModuleMarker, restoredModuleMarker)
 }
 
 func shellSingleQuote(value string) string {
@@ -681,6 +697,11 @@ func CheckRuntimeDependencies() error {
 			missing = append(missing, fmt.Sprintf("%s (required to restore archived kernel modules)", UnsquashfsBin))
 		}
 	}
+	if currentPlatformID() == PlatformArch {
+		if _, err := exec.LookPath("file"); err != nil {
+			missing = append(missing, "file (required to identify primary kernels during restored module cleanup)")
+		}
+	}
 	if len(missing) == 0 {
 		return nil
 	}
@@ -705,11 +726,27 @@ func RefreshBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 	return backups, entries, nil
 }
 
+// ReconcileCleanupWarning reports incomplete module cleanup after EFI mirrors
+// and bootloader entries have been reconciled. The returned lists are current.
+type ReconcileCleanupWarning struct {
+	Cause error
+}
+
+func (e *ReconcileCleanupWarning) Error() string {
+	return fmt.Sprintf("reconcile complete; restored module cleanup incomplete: %v", e.Cause)
+}
+
+func (e *ReconcileCleanupWarning) Unwrap() error { return e.Cause }
+
 // SyncBackupsAndGrub reconciles optional EFI mirrors used by GRUB entries:
 // - keeps EFI mirrors only for activated snapshots
 // - refreshes active EFI mirrors from snapshot source
 // - removes stale GRUB entries
 func SyncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
+	return withRecoverySyncOperation(syncBackupsAndGrub)
+}
+
+func syncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 	if err := ensureSupportedBootloader(); err != nil {
 		return nil, nil, err
 	}
@@ -790,11 +827,24 @@ func SyncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 	if err := removeStaleGrubEntries(backups, preserveGrubForName); err != nil {
 		return nil, nil, err
 	}
+	cleanupErr := cleanupRestoredModuleTrees()
+	// Cleanup can remove modules for inactive archived snapshots. Refresh only
+	// module availability so failed mirror sync flags remain intact.
+	for i := range backups {
+		b := &backups[i]
+		b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(b.KernelVersion)
+	}
 	entries, err = ListGrubEntries()
 	if err != nil {
 		return nil, nil, err
 	}
+	if entries == nil {
+		entries = []GrubEntry{}
+	}
 	markGrubFlags(backups, entries)
+	if cleanupErr != nil {
+		return backups, entries, &ReconcileCleanupWarning{Cause: cleanupErr}
+	}
 	return backups, entries, nil
 }
 
@@ -1111,11 +1161,14 @@ func restoreSquashFSModuleTree(archivePath, moduleTreePath string) error {
 	if dirExists(moduleTreePath) {
 		return nil
 	}
+	if err := markRestoredModuleTree(staging, filepath.Base(moduleTreePath)); err != nil {
+		return wrapFilesystemWriteError(staging, err)
+	}
 	if err := os.Rename(staging, moduleTreePath); err != nil {
 		return wrapFilesystemWriteError(moduleTreePath, err)
 	}
 	cleanupStaging = false
-	if err := chownTreeToRoot(moduleTreePath); err != nil {
+	if err := chownRestoredModuleTreeFunc(moduleTreePath); err != nil {
 		return wrapFilesystemWriteError(moduleTreePath, err)
 	}
 	return nil
@@ -1429,6 +1482,10 @@ func backupID(path string) string {
 // DeleteBackup removes a backup by name from both mirror locations and
 // removes the associated GRUB entry when present.
 func DeleteBackup(name string) error {
+	return withRecoveryOperation(func() error { return deleteBackup(name) })
+}
+
+func deleteBackup(name string) error {
 	name = strings.TrimSpace(name)
 	if err := validateBackupName(name); err != nil {
 		return err
@@ -1442,7 +1499,7 @@ func DeleteBackup(name string) error {
 		return err
 	}
 	if exists {
-		if err := RemoveGrubEntry(id); err != nil {
+		if err := removeGrubEntry(id); err != nil {
 			return err
 		}
 	}
@@ -1456,6 +1513,9 @@ func DeleteBackup(name string) error {
 	}
 	if err := os.RemoveAll(snapshotPath); err != nil {
 		return err
+	}
+	if err := cleanupRestoredModuleTrees(); err != nil {
+		return fmt.Errorf("backup deleted; restored module cleanup incomplete: %w", err)
 	}
 	return nil
 }
@@ -1672,6 +1732,10 @@ func minimalBootIncludePatterns() []string {
 // ActivateBackup copies a snapshot to EFI (after free-space check) and ensures
 // a matching GRUB entry exists.
 func ActivateBackup(name string) error {
+	return withRecoveryOperation(func() error { return activateBackup(name) })
+}
+
+func activateBackup(name string) error {
 	if err := ensureSupportedBootloader(); err != nil {
 		return err
 	}
@@ -1703,12 +1767,16 @@ func ActivateBackup(name string) error {
 			return err
 		}
 	}
-	return AddGrubEntry(canonical)
+	return addGrubEntry(canonical)
 }
 
 // DeactivateBackup removes the GRUB entry and optional EFI mirror, while
 // keeping the snapshot in SnapshotDir.
 func DeactivateBackup(name string) error {
+	return withRecoveryOperation(func() error { return deactivateBackup(name) })
+}
+
+func deactivateBackup(name string) error {
 	if err := ensureSupportedBootloader(); err != nil {
 		return err
 	}
@@ -1716,7 +1784,7 @@ func DeactivateBackup(name string) error {
 	if err := validateBackupName(name); err != nil {
 		return err
 	}
-	if err := RemoveGrubEntry(backupIDForName(name)); err != nil {
+	if err := removeGrubEntry(backupIDForName(name)); err != nil {
 		return err
 	}
 	if dirExists(filepath.Join(EfiDir, name)) {
@@ -1724,7 +1792,13 @@ func DeactivateBackup(name string) error {
 			return err
 		}
 	}
-	return os.RemoveAll(filepath.Join(EfiDir, name))
+	if err := os.RemoveAll(filepath.Join(EfiDir, name)); err != nil {
+		return err
+	}
+	if err := cleanupRestoredModuleTrees(); err != nil {
+		return fmt.Errorf("backup deactivated; restored module cleanup incomplete: %w", err)
+	}
+	return nil
 }
 
 func syncDirContents(src, dst string) error {
