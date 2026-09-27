@@ -79,7 +79,9 @@ func runCommandCombinedOutput(cmd *exec.Cmd) ([]byte, error) {
 	wg.Add(2)
 	go scan(stdout)
 	go scan(stderr)
-	waitErr := cmd.Wait()
+	// Wait closes StdoutPipe/StderrPipe. Drain both readers first so a
+	// short-lived command cannot lose output before the scanners run.
 	wg.Wait()
+	waitErr := cmd.Wait()
 	return out.Bytes(), waitErr
 }

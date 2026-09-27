@@ -22,6 +22,13 @@
 - Fedora dracut restore now recognizes Bootrecov fallback boots from `BOOT_IMAGE` paths when GRUB/BLS does not preserve custom kernel markers.
 - Debian VM gate now finds GRUB tools installed under `/usr/sbin` in non-login SSH commands.
 
+## v0.4.12 - 2026-09-27
+
+### Fixed
+
+- Command output is drained before process cleanup closes its pipes, preventing lost progress and diagnostic lines from short-lived commands. The streaming regression test now exercises single-processor scheduling.
+- Includes the restored-module cleanup changes below. The v0.4.11 GitHub release was not published because CI exposed this output race.
+
 ## v0.4.11 - 2026-09-27
 
 ### Fixed

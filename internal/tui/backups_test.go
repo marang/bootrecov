@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -480,6 +481,8 @@ func writeExecutable(t *testing.T, path, content string) {
 }
 
 func TestRunCommandCombinedOutputStreamsCommandLines(t *testing.T) {
+	previous := runtime.GOMAXPROCS(1)
+	t.Cleanup(func() { runtime.GOMAXPROCS(previous) })
 	script := filepath.Join(t.TempDir(), "emit-lines")
 	writeExecutable(t, script, "#!/bin/sh\nprintf 'stdout line\\n'\nprintf 'stderr line\\n' >&2\n")
 	var got []string
