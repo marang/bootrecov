@@ -289,6 +289,12 @@ func UninstallPacmanHook() (bool, error) {
 }
 
 func HookInstalled() bool {
+	if currentPlatformID() == PlatformArch {
+		mode := inspectMkinitcpioMode(MkinitcpioConfPath)
+		if mode.name != "busybox" || mode.reason != "" || !containsHook(mode.hooks, "bootrecov") {
+			return false
+		}
+	}
 	for _, hookPath := range []string{PacmanHookPath, PacmanPostHookPath, MkinitcpioInstallPath, MkinitcpioHookPath} {
 		if !fileExists(hookPath) {
 			return false
@@ -650,6 +656,7 @@ func regenerateInitramfs() error {
 		return fmt.Errorf("%w: mkinitcpio is required for initramfs regeneration but was not found in PATH", ErrRequiredToolUnavailable)
 	}
 	cmd := exec.Command(MkinitcpioBin, "-P")
+	cmd.Env = append(os.Environ(), "MKINITCPIO_CONF="+MkinitcpioConfPath)
 	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {
 		return fmt.Errorf("%w: mkinitcpio -P: %w: %s", ErrCommandFailed, err, strings.TrimSpace(string(out)))

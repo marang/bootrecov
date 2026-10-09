@@ -12,6 +12,7 @@ Bootrecov is intentionally conservative because it writes to boot-critical locat
 - Ambiguous bootloader signals are rejected instead of enabling a potentially wrong backend.
 - ESP auto-detection accepts only common ESP mount paths or FAT mounts with bootloader markers.
 - Unsupported package hook platforms return an explicit error instead of installing partial hooks.
+- On Arch, hook installation verifies a literal BusyBox mkinitcpio `HOOKS` setup and checks drop-ins and presets before writing files. Systemd or ambiguous configurations are refused, and `doctor` reports the reason.
 - TUI and CLI invocations require explicit risk acknowledgement via prompt, flag, or environment variable.
 - Activation restores an archived `/usr/lib/modules/<version>` tree when the live tree is missing and the snapshot contains a matching SquashFS archive.
 - Activation and reconcile do not overwrite an existing `/usr/lib/modules/<version>` tree.

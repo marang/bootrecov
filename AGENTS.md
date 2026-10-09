@@ -67,7 +67,7 @@ Important behavior:
 - Platform and bootloader detection with environment overrides
 - Recovery command generation for activated snapshots
 - Pacman and DNF hook installation for pre-transaction snapshots and post-transaction active fallback reconciliation
-- Arch/mkinitcpio boot-time module restore hook installation for self-restoring GRUB fallback boots
+- Arch/BusyBox-mkinitcpio boot-time module restore hook installation for self-restoring GRUB fallback boots
 - Fedora/dracut boot-time module restore hook installation for self-restoring GRUB fallback boots
 - Rootless QEMU integration test harness under `test/bootvm/`
 - Tagged release workflow via GoReleaser
@@ -173,7 +173,7 @@ Environment overrides:
 - `BOOTRECOV_DRACUT_BIN=dracut`
 
 Path detection should handle common `/boot/efi`, `/efi`, and ESP-at-`/boot` layouts conservatively. Fedora-family BLS layouts should default active mirrors to `/boot/bootrecov-snapshots` when BLS entries are present and no explicit mirror override is set. Explicit environment overrides always take precedence.
-Arch/mkinitcpio hook path detection should use the `mkinitcpio` binary from `PATH`, existing mkinitcpio config, and existing initcpio hook directories before falling back to defaults. Do not apply Arch/mkinitcpio paths to other initramfs backends.
+Arch/mkinitcpio hook path detection should use the `mkinitcpio` binary from `PATH`, existing mkinitcpio config, and existing initcpio hook directories before falling back to defaults. Do not apply Arch/mkinitcpio paths to other initramfs backends. The runtime hook uses BusyBox `run_latehook`; installation inspects literal `HOOKS`, drop-ins, and presets, and refuses systemd or ambiguous configurations before writing files. `doctor` reports the mode or refusal reason; `HookInstalled` requires an effective BusyBox hook.
 Fedora-family hook installation uses DNF action plugin directories only when present, prefers DNF5 over DNF4 when both are installed, scopes actions to boot-critical package filters, and installs a dracut module for boot-time restore.
 If multiple bootloader signals are detected, report ambiguity and require/accept `BOOTRECOV_BOOTLOADER` to choose the intended backend instead of guessing.
 
@@ -220,7 +220,7 @@ Current Arch action:
 - if snapshot space is insufficient, the hook prints a warning and exits successfully so the package transaction is not blocked
 - non-space pre-transaction errors still fail the hook
 - post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction
-- mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/<configured-root-modules-dir>/<kernel-version>`, normally `/new_root/usr/lib/modules/<kernel-version>`, only for Bootrecov GRUB fallback boots
+- BusyBox-mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/<configured-root-modules-dir>/<kernel-version>`, normally `/new_root/usr/lib/modules/<kernel-version>`, only for Bootrecov GRUB fallback boots. Systemd-based mkinitcpio images have no Bootrecov restore unit.
 - Fedora/dracut boot-time restore runs as a pre-pivot dracut hook after root is mounted at `/sysroot`; it recognizes either Bootrecov's kernel marker or a `BOOT_IMAGE` path under `bootrecov-snapshots`; initramfs-tools support is planned but not implemented
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.

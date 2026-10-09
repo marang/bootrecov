@@ -15,7 +15,7 @@ The default rootless VM gate runs the `ubuntu-grub` scenario. `make test-bootvm-
 
 | Gate | Purpose | Required before |
 | --- | --- | --- |
-| Arch + GRUB + EFI | Recovery boot and restored module/DKMS cleanup with real kernel packages | available as `make test-bootvm-arch-grub-cleanup`; every release |
+| Arch + GRUB + EFI | Recovery boot, restored module/DKMS cleanup, systemd-mkinitcpio refusal, and BusyBox restore boot with real kernel packages | available as `make test-bootvm-arch-grub-cleanup`; every release |
 | Ubuntu/Debian + GRUB + EFI | Prove non-Arch GRUB support | available as `make test-bootvm-grub-matrix`; mandatory before declaring Ubuntu/Debian fully supported |
 | Fedora-family + GRUB/BLS | Prove dracut/BLS compatibility | available as `make test-bootvm-fedora-grub-bls`; mandatory before promoting Fedora-family hook or BLS changes |
 | systemd-boot + EFI | Prove managed systemd-boot entries | enabling systemd-boot mutations |

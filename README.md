@@ -311,7 +311,7 @@ Remove the package-manager hook:
 bootrecov hook uninstall
 ```
 
-Hook installation is implemented for Arch/pacman+mkinitcpio and Fedora-family DNF+dracut systems. Ubuntu/Debian apt/dpkg hook support is planned but intentionally not enabled yet.
+Hook installation is implemented for Arch/pacman with BusyBox-based mkinitcpio and Fedora-family DNF+dracut systems. Arch mkinitcpio configurations using the `systemd` hook, an effective `HOOKS`-overriding drop-in, a preset with another config or hook-changing options, or dynamic hook definitions are refused before files are written. A preset explicitly selecting the main config ignores drop-ins, matching mkinitcpio's `-c` behavior. `bootrecov doctor` reports the detected initramfs mode or the reason it cannot be verified. Ubuntu/Debian apt/dpkg hook support is planned but intentionally not enabled yet.
 
 Compatibility aliases retained for existing automation:
 
@@ -436,7 +436,7 @@ Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; th
 
 After the transaction, the post hook reconciles active Bootrecov entries. This restores archived module trees for already-active fallback kernels if the package update removed `/usr/lib/modules/<old-version>`, then refreshes active boot mirrors and bootloader state. Post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction.
 
-The mkinitcpio runtime hook is a second safety net. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. The root module directory comes from Bootrecov's detected/configured `RootModulesDir` and defaults to `/usr/lib/modules`. This hook is Arch/mkinitcpio-specific; Fedora uses the dracut module described below.
+The mkinitcpio runtime hook is a second safety net for BusyBox-based initramfs images. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. The root module directory comes from Bootrecov's detected/configured `RootModulesDir` and defaults to `/usr/lib/modules`. A systemd-based mkinitcpio image does not run this BusyBox runtime hook; Bootrecov does not install a systemd initramfs unit. Fedora uses the dracut module described below.
 
 On Fedora-family systems, `bootrecov hook install` installs DNF action files when a supported action plugin directory exists and installs a dracut module:
 
@@ -657,7 +657,7 @@ Useful targets:
 - `make fmt`: run `gofmt`
 - `make test`: run vet, tests, race tests, and coverage
 - `make test-bootvm`: run the rootless VM integration test
-- `make test-bootvm-arch-grub-cleanup`: boot an Arch recovery through GRUB and check restored modules and real DKMS cleanup
+- `make test-bootvm-arch-grub-cleanup`: boot Arch recoveries through GRUB, check module/DKMS cleanup, refuse systemd mkinitcpio, and boot a real BusyBox initramfs that restores missing modules
 - `make test-bootvm-ubuntu-grub`: run the explicit Ubuntu + GRUB VM gate
 - `make test-bootvm-debian-grub`: run the explicit Debian + GRUB VM gate
 - `make test-bootvm-fedora-grub-bls`: run the explicit Fedora + GRUB/BLS VM gate

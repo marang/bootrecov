@@ -48,6 +48,7 @@ func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	MkinitcpioInstallPath = filepath.Join(filepath.Dir(grub), "initcpio", "install", "bootrecov")
 	MkinitcpioHookPath = filepath.Join(filepath.Dir(grub), "initcpio", "hooks", "bootrecov")
 	MkinitcpioConfPath = filepath.Join(filepath.Dir(grub), "mkinitcpio.conf")
+	t.Setenv("MKINITCPIO_PRESETS", filepath.Join(filepath.Dir(grub), "mkinitcpio.d"))
 	MkinitcpioBin = ""
 	BLSEntriesDir = filepath.Join(boot, "loader", "entries")
 	DNF5ActionsPath = filepath.Join(filepath.Dir(grub), "dnf5", "actions.d", "95-bootrecov.actions")
