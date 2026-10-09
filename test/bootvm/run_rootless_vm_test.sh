@@ -856,7 +856,7 @@ sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup deactivate "${SNAP_NAME}" >
 }
 df -h "$(dirname "${BOOTRECOV_MIRROR_ROOT}")" | sed 's/^/[guest-mirror-free-after-deactivate] /'
 
-echo "[guest] checking archived previous-kernel module image restores during activation"
+echo "[guest] checking a renamed kernel image cannot restore unrelated archived modules"
 PREV_VERSION="6.0.0-bootrecov-e2e"
 PREV_SNAPSHOT="2026-prev-kernel-archived-modules"
 PREV_SNAPSHOT_DIR="/var/backups/bootrecov-snapshots/${PREV_SNAPSHOT}"
@@ -868,30 +868,41 @@ sudo cp -f "${INITRD_SRC}" "${PREV_SNAPSHOT_DIR}/initrd.img-${PREV_VERSION}"
 sudo mkdir -p "${PREV_MODULE_SRC}"
 printf 'bootrecov previous module metadata\n' | sudo tee "${PREV_MODULE_SRC}/modules.dep" >/dev/null
 sudo mksquashfs "${PREV_MODULE_SRC}" "${PREV_SNAPSHOT_DIR}/.bootrecov/root-modules/${PREV_VERSION}.sqfs" -comp zstd -Xcompression-level 15 -noappend >/tmp/bootrecov-prev-mksquashfs.log 2>&1
-if ! sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
-  echo "[guest] activation failed for archived previous-kernel module tree" >&2
-  sudo cat /tmp/bootrecov-prev-activate.log || true
+if sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup activate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-activate.log 2>&1; then
+  echo "[guest] renamed kernel image unexpectedly activated with unrelated module archive" >&2
   exit 1
 fi
-if [[ ! -f "/usr/lib/modules/${PREV_VERSION}/modules.dep" ]]; then
-  echo "[guest] previous-kernel activation did not restore /usr/lib/modules/${PREV_VERSION}" >&2
+if sudo test -e "/usr/lib/modules/${PREV_VERSION}" || sudo test -e "${BOOTRECOV_MIRROR_ROOT}/${PREV_SNAPSHOT}"; then
+  echo "[guest] rejected renamed kernel image changed modules or EFI mirror" >&2
   exit 1
 fi
-if ! sudo test -d "${BOOTRECOV_MIRROR_ROOT}/${PREV_SNAPSHOT}"; then
-  echo "[guest] previous-kernel activation did not create an EFI mirror" >&2
-  sudo cat /tmp/bootrecov-prev-activate.log || true
-  sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup list || true
-  sudo find "${BOOTRECOV_MIRROR_ROOT}" -maxdepth 3 -mindepth 1 -print | sort || true
-  sudo find "${PREV_SNAPSHOT_DIR}" -maxdepth 3 -print | sort || true
+sudo rm -rf "${PREV_SNAPSHOT_DIR}" "${PREV_MODULE_SRC}"
+echo "[guest] renamed kernel image safely rejected"
+
+echo "[guest] checking matching archived kernel modules restore during activation"
+ARCHIVED_SNAPSHOT="2026-matching-kernel-archived-modules"
+ARCHIVED_SNAPSHOT_DIR="/var/backups/bootrecov-snapshots/${ARCHIVED_SNAPSHOT}"
+sudo rm -rf "${ARCHIVED_SNAPSHOT_DIR}" "${BOOTRECOV_MIRROR_ROOT}/${ARCHIVED_SNAPSHOT}"
+sudo mkdir -p "${ARCHIVED_SNAPSHOT_DIR}/.bootrecov/root-modules"
+sudo cp -f "${KERNEL_SRC}" "${ARCHIVED_SNAPSHOT_DIR}/vmlinuz-${KERNEL_VERSION}"
+sudo cp -f "${INITRD_SRC}" "${ARCHIVED_SNAPSHOT_DIR}/initrd.img-${KERNEL_VERSION}"
+sudo cp -f "/var/backups/bootrecov-snapshots/${SNAP_NAME}/.bootrecov/root-modules/${KERNEL_VERSION}.sqfs" "${ARCHIVED_SNAPSHOT_DIR}/.bootrecov/root-modules/${KERNEL_VERSION}.sqfs"
+sudo rm -rf "/usr/lib/modules/${KERNEL_VERSION}"
+if ! sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup activate "${ARCHIVED_SNAPSHOT}" >/tmp/bootrecov-archived-activate.log 2>&1; then
+  echo "[guest] activation failed for matching archived module tree" >&2
+  sudo cat /tmp/bootrecov-archived-activate.log || true
   exit 1
 fi
-sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup deactivate "${PREV_SNAPSHOT}" >/tmp/bootrecov-prev-deactivate.log 2>&1 || {
-  echo "[guest] previous-kernel deactivate failed"
-  sudo cat /tmp/bootrecov-prev-deactivate.log || true
+if [[ ! -f "/usr/lib/modules/${KERNEL_VERSION}/modules.dep" ]] || ! sudo test -d "${BOOTRECOV_MIRROR_ROOT}/${ARCHIVED_SNAPSHOT}"; then
+  echo "[guest] matching archived module activation did not restore modules and EFI mirror" >&2
+  exit 1
+fi
+sudo env "${BOOTRECOV_ENV[@]}" /tmp/bootrecov backup deactivate "${ARCHIVED_SNAPSHOT}" >/tmp/bootrecov-archived-deactivate.log 2>&1 || {
+  echo "[guest] matching archived module deactivate failed"
+  sudo cat /tmp/bootrecov-archived-deactivate.log || true
   exit 1
 }
-sudo rm -rf "/usr/lib/modules/${PREV_VERSION}" "${PREV_MODULE_SRC}"
-echo "[guest] previous-kernel archived-module restore check passed"
+echo "[guest] matching archived-module restore check passed"
 
 echo "[guest] preparing deterministic GRUB smoke snapshot"
 sudo mkdir -p "${BACKUP_DIR}"

@@ -26,7 +26,10 @@ Important behavior:
 
 - new snapshots are created only in the snapshot source directory
 - active boot mirrors exist only for activated bootloader entries
+- readiness checks require selected kernel, initramfs, and microcode artifacts to be non-empty regular files with matching snapshot and mirror content; activation resynchronizes damaged existing mirrors or reports an error. This does not prove a real boot will succeed
+- snapshot creation and activation require a matching kernel/initramfs filename pair; known different versions are rejected. A later pair change in an active snapshot is not silently published over its existing GRUB/BLS entry; reconcile checks the old entry's referenced artifacts and module tree, restoring the latter from its archive when available. Unknown artifact syntax in an existing recovery entry stops activation and reconcile
 - snapshots contain `/boot` state plus an optional compressed SquashFS image of the matching `/usr/lib/modules/<kernel-version>` tree
+- kernel identity comes from the selected image or matching versioned artifact filenames; a detected image/filename conflict is unknown, and an unknown image version is never replaced by `uname -r` or an archive filename. Such snapshots remain visible with unknown module status, new activation is rejected, and an existing ambiguous recovery is retained only while its entry paths point to present mirror files. Inactive ambiguous snapshots do not globally block cleanup of unrelated restored modules
 - module archives live under `.bootrecov/root-modules/<kernel-version>.sqfs` inside the snapshot source
 - module archives are not copied into active boot mirrors
 - activation restores an archived `/usr/lib/modules/<kernel-version>` tree automatically when the live root module tree is missing
@@ -35,6 +38,7 @@ Important behavior:
 - Arch module cleanup removes matching DKMS builds only for unused, inode-marked restored trees; active recoveries (including Bootrecov's generated `search --file` entries), the running kernel, installed package files, and snapshots without module archives protect their kernel versions
 - standard Windows GRUB menuentries targeting the literal `/EFI/Microsoft/Boot/bootmgfw.efi` path with recognized setup commands do not block cleanup; unknown chainloaders, UKIs, dynamic targets, BootNext selections, and unrecognized file searches remain conservative blockers
 - entry, snapshot, and module-tree mutations share a cross-process lock under `/run/lock/bootrecov`; module cleanup holds the Arch package lock and is deferred during package transactions
+- command stdout and stderr are drained without a line-length limit; retained diagnostics are capped at 256 KiB and TUI progress delivery is best-effort so a slow display cannot stall a child process
 - GRUB custom entries are stored in `/etc/grub.d/41_bootrecov_snapshots`
 - Fedora-family GRUB/BLS systems use Bootrecov-owned BLS entries under `/boot/loader/entries` when the active mirror is on the same boot filesystem
 - GRUB config is regenerated with `grub-mkconfig -o /boot/grub/grub.cfg` after GRUB entry changes
@@ -46,6 +50,8 @@ Important behavior:
 - reconcile removes inactive boot mirrors
 - reconcile removes entries for snapshots whose kernel version is known, whose matching root module tree is missing, and whose snapshot has no archived module tree to restore
 - reconcile preserves an already-bootable GRUB entry if refresh of its active boot mirror fails transiently
+- reconcile leaves an existing active mirror and entry in place if the snapshot boot artifacts are invalid and the mirror still has plausible boot artifacts; otherwise it removes the unusable entry. Either way the backup is reported out of sync, and recovery commands require a verified mirror
+- reconcile returns a typed partial failure for per-snapshot mirror removal, module restore, or mirror sync errors, including successful operations and verified final entry/mirror state when available. Later GRUB or entry-list failures retain the completed-operation report and mark final state unverified. Manual CLI returns nonzero; TUI refreshes known state and shows each issue; package post-hooks warn but do not fail the completed transaction. Module cleanup warnings remain distinct
 
 ## Implemented Features
 

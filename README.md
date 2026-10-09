@@ -27,11 +27,14 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - Reconcile active boot mirrors and bootloader entries against the snapshot store.
 - Remove stale inactive boot mirrors.
 - Preserve an already bootable GRUB entry if refreshing its active boot mirror fails transiently.
+- Check selected kernel, initramfs, and microcode files in active mirrors against the snapshot by content; reject empty, non-regular, or mismatched boot artifacts. Activation resynchronizes an existing damaged mirror and reports an error if verification still fails.
+- Select kernel and initramfs only from matching filename families and versions. If an activated snapshot later selects a different pair, activation asks for deactivation first. Reconcile keeps an old entry only when its referenced mirror artifacts and modules remain available; it restores those modules from the matching archive when needed, leaves the mirror untouched, and reports the backup out of sync. Activation and reconcile stop when an existing recovery entry's boot artifacts cannot be identified.
 - Print GRUB recovery commands for an activated snapshot.
 - Install Arch pacman hooks to create snapshots before boot-critical package changes and refresh active recovery entries after them.
 - Install an Arch/mkinitcpio boot-time restore hook so selected GRUB fallbacks can restore missing archived modules automatically after root mount.
 - Install Fedora DNF action hooks and a dracut boot-time restore module for Fedora-family GRUB systems.
 - Archive the matching `/usr/lib/modules/<kernel-version>` tree as compressed SquashFS metadata inside the snapshot source.
+- Derive the archived module version from the selected kernel image or its matching versioned filename. If image inspection reports a different version from the filenames, the identity is treated as unknown. An unrecognized image version stays unknown; Bootrecov does not substitute the running kernel version or infer image identity from an archive filename.
 - Restore archived `/usr/lib/modules/<kernel-version>` trees automatically during activation when the live tree is missing.
 - Clean up module trees restored by Bootrecov after their last recovery entry is removed, when no installed or running kernel needs them.
 - Validate snapshot names before path-sensitive operations.
@@ -51,6 +54,8 @@ Every TUI or CLI invocation requires an explicit acknowledgement. Interactive ru
 - It is not a replacement for a rescue USB or real system backups.
 
 The archived module SquashFS makes the backup complete and restorable. Activation stays conservative: if the matching `/usr/lib/modules/<version>` tree already exists, Bootrecov leaves it alone; if it is missing and the snapshot has an archive, Bootrecov restores that exact tree before adding the bootloader entry.
+
+When the selected kernel image's version cannot be verified, snapshot creation keeps the snapshot without a module archive and shows `KERNEL` and `ROOT-MODULES` as `unknown`. Activation and recovery-command generation reject that snapshot. Older snapshots with an archive whose name was inferred from the running kernel remain on disk, but the archive name alone no longer establishes the image version or makes the snapshot restorable. An already active ambiguous recovery is retained while its referenced mirror files remain present at the paths recorded in its entry; reconcile reports it out of sync and does not replace its mirror. An inactive ambiguous snapshot cannot reserve an unknown module version during cleanup. To make it eligible for activation again, inspect the actual kernel image and create a new snapshot with a verifiable kernel version and matching modules.
 
 Restored module trees carry an inode-bound ownership marker. On Arch, deactivation, backup deletion, entry removal, and reconciliation can remove a marked tree after its last recovery entry is gone, together with DKMS builds for that kernel version. Cleanup keeps the running kernel, package-owned files, and trees referenced by remaining GRUB or BLS entries, including manually maintained entries. Snapshots without an archived module tree also retain their matching live modules. Bootrecov serializes these operations across processes and holds the Arch package lock while cleaning. Other distributions retain marked trees until package-safe cleanup is supported. Cleanup waits until after an active package transaction and runs on the next removal or reconciliation. Older, unmarked directories are left for manual inspection.
 
@@ -321,8 +326,8 @@ bootrecov recovery-commands <snapshot-name>
 - `SNAPSHOT`: snapshot exists in `/var/backups/bootrecov-snapshots`
 - `EFI`: active boot mirror exists. The column name is retained for CLI compatibility.
 - `BOOTLOADER`: Bootrecov bootloader entry exists
-- `BOOTABLE`: snapshot is complete, active, synced, and can boot without restoring archived modules first
-- `RESTORABLE`: snapshot is complete, active, synced, and can restore archived modules during activation/reconcile
+- `BOOTABLE`: required snapshot and mirror artifacts are non-empty regular files with matching content, and the kernel version and matching root modules are known. This is a readiness check, not proof that a real boot will succeed.
+- `RESTORABLE`: the artifact check passes and archived root modules can be restored during activation/reconcile
 - `ROOT-MODULES`: `yes`, `missing`, `archived`, or `unknown`
 - `KERNEL`: detected kernel version
 
@@ -344,6 +349,8 @@ Bootloader entries view:
 - `x`: remove selected bootloader entry
 - `tab`: switch back to backups
 - `q`: quit
+
+The TUI shows command progress on a best-effort basis. If the display cannot keep up, it may omit intermediate lines; command stdout and stderr are still drained, and retained diagnostic output is limited to the latest 256 KiB with a truncation marker.
 
 ## Backup Profiles
 
@@ -397,6 +404,9 @@ Reconcile is intentionally conservative:
 - Unneeded module trees restored by Bootrecov are cleaned up when their ownership and safety checks pass.
 - Entries for known missing root module trees are treated as not boot-ready.
 - A previously bootable entry is preserved if refreshing its active boot mirror fails transiently.
+- Reconcile does not overwrite an existing active mirror with invalid snapshot boot artifacts; it keeps the existing entry if the mirror still has plausible boot artifacts, while marking the backup out of sync.
+- Reconcile drops an entry when both the source and active mirror lack usable boot artifacts. Recovery commands are withheld for mirrors that fail the content check.
+- Reconcile continues independent snapshots after a mirror removal, module restore, or active mirror sync fails. It reports each failed snapshot and operation with the remaining entry/mirror state, while retaining successful changes. A later GRUB or final entry-list failure keeps the completed-operation report and explicitly marks final bootloader state unverified. Manual `bootrecov reconcile` returns a nonzero exit status for any partial failure. The TUI refreshes verified lists and shows the failures. Post-transaction hooks still exit successfully after the package transaction but warn when recovery readiness is unverified or a previously active entry was lost. Module cleanup warnings are reported separately.
 
 ## Package Hooks
 
