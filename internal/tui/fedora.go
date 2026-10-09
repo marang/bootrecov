@@ -29,7 +29,7 @@ func addBLSEntry(b BootBackup) error {
 	if fileExists(path) {
 		return nil
 	}
-	cmdline := blsKernelOptions(id)
+	cmdline := blsKernelOptions(id, b.Name)
 	linuxPath := blsVisiblePath(filepath.Join(b.EFIPath, b.KernelImage))
 	initrdPaths := make([]string, 0, len(b.MicrocodeImages)+1)
 	for _, microcode := range b.MicrocodeImages {
@@ -139,8 +139,8 @@ func renderBLSEntry(id string, b BootBackup, linuxPath string, initrdPaths []str
 	return strings.Join(lines, "\n")
 }
 
-func blsKernelOptions(id string) string {
-	return strings.TrimSpace("$kernelopts " + kernelCmdlineMarker + id)
+func blsKernelOptions(id, name string) string {
+	return strings.TrimSpace("$kernelopts " + kernelCmdlineMarker + id + " bootrecov_snapshot=" + name)
 }
 
 func blsEntryPath(id string) string {
@@ -226,6 +226,13 @@ func uninstallFedoraHooks() (bool, error) {
 		}
 		removed = true
 	}
+	if err := os.Remove(DracutConfigPath); err != nil {
+		if !os.IsNotExist(err) {
+			return removed, err
+		}
+	} else {
+		removed = true
+	}
 	if removed {
 		if err := regenerateDracutInitramfs(); err != nil {
 			return removed, err
@@ -237,7 +244,8 @@ func uninstallFedoraHooks() (bool, error) {
 func fedoraHooksInstalled() bool {
 	return (fileExists(DNF5ActionsPath) || (fileExists(DNF4PreActionsPath) && fileExists(DNF4PostActionsPath))) &&
 		fileExists(filepath.Join(DracutModuleDir, "module-setup.sh")) &&
-		fileExists(filepath.Join(DracutModuleDir, "bootrecov-restore.sh"))
+		fileExists(filepath.Join(DracutModuleDir, "bootrecov-restore.sh")) &&
+		fileExists(DracutConfigPath)
 }
 
 func installFedoraDNFActions(executablePath string) (bool, error) {
@@ -301,6 +309,12 @@ func installFedoraDracutModule() error {
 			return err
 		}
 	}
+	if err := os.MkdirAll(filepath.Dir(DracutConfigPath), 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(DracutConfigPath, []byte("# Created by bootrecov. Include the restore hook in host-only images.\nforce_add_dracutmodules+=\" bootrecov \"\n"), 0o644); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -308,6 +322,7 @@ func fedoraDracutInstallPaths() []string {
 	return []string{
 		filepath.Join(DracutModuleDir, "module-setup.sh"),
 		filepath.Join(DracutModuleDir, "bootrecov-restore.sh"),
+		DracutConfigPath,
 	}
 }
 
@@ -319,13 +334,8 @@ check() {
     return 0
 }
 
-depends() {
-    echo squash
-    return 0
-}
-
 install() {
-    inst_multiple unsquashfs mkdir mktemp mv rm chown cat uname stat
+    inst_multiple unsquashfs mkdir mktemp mv rm chown cat uname stat mount umount mountpoint rmdir findmnt
     inst_hook pre-pivot 95 "$moddir/bootrecov-restore.sh"
 }
 `
@@ -336,26 +346,129 @@ func renderDracutRestoreScript() string {
 	if !filepath.IsAbs(rootModulesDir) {
 		rootModulesDir = "/usr/lib/modules"
 	}
+	mirrorRoot := filepath.Clean(EfiDir)
+	if !filepath.IsAbs(mirrorRoot) {
+		mirrorRoot = ""
+	}
+	mirrorVisible := grubVisiblePath(EfiDir)
+	if !strings.HasPrefix(mirrorVisible, "/") || mirrorVisible == "/" {
+		mirrorVisible = ""
+	}
 	return fmt.Sprintf(`#!/bin/sh
 
+mirror_root=%s
+mirror_visible=%s
 cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
 has_marker=0
-case " ${cmdline} " in
-    *" bootrecov_entry="*) has_marker=1 ;;
-esac
-
+entry_count=0
+entry_id=""
+image_count=0
+image_path=""
+marker_count=0
+marker_name=""
+name=""
 for entry in ${cmdline}; do
     case "${entry}" in
+        BOOT_IMAGE=*) image_count=$((image_count + 1)); image_path="${entry#BOOT_IMAGE=}" ;;
+    esac
+    case "${entry}" in
+        bootrecov_entry=*)
+            has_marker=1
+            entry_count=$((entry_count + 1))
+            entry_id="${entry#bootrecov_entry=}"
+            ;;
+        bootrecov_snapshot=*)
+            marker_count=$((marker_count + 1))
+            marker_name="${entry#bootrecov_snapshot=}"
+            ;;
         BOOT_IMAGE=/bootrecov-snapshots/*)
             boot_image="${entry#BOOT_IMAGE=/bootrecov-snapshots/}"
-            name="${boot_image%%/*}"
+            case "${boot_image}" in */*/*) ;; */*) name="${boot_image%%/*}" ;; esac
             ;;
         BOOT_IMAGE=*/bootrecov-snapshots/*)
             boot_image="${entry#*/bootrecov-snapshots/}"
-            name="${boot_image%%/*}"
+            case "${boot_image}" in */*/*) ;; */*) name="${boot_image%%/*}" ;; esac
             ;;
     esac
 done
+
+if [ "${entry_count}" -gt 1 ]; then
+    echo "bootrecov: ambiguous Bootrecov entry marker" >&2
+    return 0 2>/dev/null || exit 0
+fi
+if [ "${entry_count}" -eq 1 ]; then
+    case "${entry_id}" in bootrecov-*) entry_suffix="${entry_id#bootrecov-}" ;; *) entry_suffix="" ;; esac
+    case "${entry_suffix}" in
+        *[!0-9a-f]*|"") echo "bootrecov: invalid Bootrecov entry marker" >&2; return 0 2>/dev/null || exit 0 ;;
+    esac
+    if [ "${#entry_suffix}" -ne 12 ]; then
+        echo "bootrecov: invalid Bootrecov entry marker" >&2
+        return 0 2>/dev/null || exit 0
+    fi
+fi
+
+if [ "${image_count}" -gt 1 ]; then
+    echo "bootrecov: ambiguous snapshot identity: multiple BOOT_IMAGE values" >&2
+    return 0 2>/dev/null || exit 0
+fi
+case "${image_path}" in
+    *"//"*|*/./*|*/../*|*/.|*/..|*/)
+        echo "bootrecov: invalid BOOT_IMAGE path" >&2
+        return 0 2>/dev/null || exit 0
+        ;;
+esac
+image_name=""
+case "${image_path}" in
+    */*/*)
+        boot_image="${image_path%%/*}"
+        image_name="${boot_image##*/}"
+        ;;
+esac
+
+if [ "${entry_count}" -eq 0 ] && [ "${marker_count}" -eq 0 ] && [ -z "${name}" ] && [ -n "${image_path}" ]; then
+    image_visible="/${image_path#*/}"
+    for mirror in "${mirror_root}" "${mirror_visible}"; do
+        case "${mirror}" in ""|/) continue ;; esac
+        case "${image_visible}" in
+            "${mirror}"/*)
+                mirror_tail="${image_visible#"${mirror}"/}"
+                case "${mirror_tail}" in
+                    */*/*|""|/*) echo "bootrecov: invalid BOOT_IMAGE path under configured mirror" >&2; return 0 2>/dev/null || exit 0 ;;
+                    */*) name="${mirror_tail%%/*}" ;;
+                esac
+                break
+                ;;
+        esac
+    done
+fi
+
+if [ "${marker_count}" -gt 1 ]; then
+    echo "bootrecov: ambiguous snapshot identity: multiple snapshot markers" >&2
+    return 0 2>/dev/null || exit 0
+fi
+if [ "${marker_count}" -eq 1 ] && [ -z "${marker_name}" ]; then
+    echo "bootrecov: refusing invalid snapshot name: empty snapshot marker" >&2
+    return 0 2>/dev/null || exit 0
+fi
+if [ "${marker_count}" -eq 1 ]; then
+    case "${marker_name}" in
+        [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) echo "bootrecov: refusing invalid snapshot name: ${marker_name}" >&2; return 0 2>/dev/null || exit 0 ;;
+    esac
+fi
+if [ "${marker_count}" -eq 1 ] && [ "${has_marker}" -eq 0 ]; then
+    echo "bootrecov: snapshot parameter found without Bootrecov entry marker" >&2
+    return 0 2>/dev/null || exit 0
+fi
+
+if [ "${marker_count}" -eq 0 ] && [ "${has_marker}" -eq 1 ] && [ -n "${image_name}" ]; then
+    name="${image_name}"
+fi
+
+if [ -n "${marker_name}" ] && [ -n "${image_name}" ] && [ "${marker_name}" != "${image_name}" ]; then
+    echo "bootrecov: conflicting snapshot identities in boot parameters" >&2
+    return 0 2>/dev/null || exit 0
+fi
+[ -z "${marker_name}" ] || name="${marker_name}"
 
 [ -n "${name}" ] || {
     [ "${has_marker}" -eq 0 ] || echo "bootrecov: fallback marker found but snapshot name could not be parsed" >&2
@@ -363,21 +476,114 @@ done
 }
 
 case "${name}" in
-    .|..|/*|*/*|*" "*) echo "bootrecov: refusing invalid snapshot name: ${name}" >&2; return 0 2>/dev/null || exit 0 ;;
+    [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) echo "bootrecov: refusing invalid snapshot name: ${name}" >&2; return 0 2>/dev/null || exit 0 ;;
 esac
 
+(
 version="$(uname -r)"
 sysroot="${NEWROOT:-/sysroot}"
 root_modules_dir=%s
-archive="${sysroot}/var/backups/bootrecov-snapshots/${name}/.bootrecov/root-modules/${version}.sqfs"
 modules_parent="${sysroot}${root_modules_dir}"
 target="${modules_parent}/${version}"
-
 [ ! -d "${target}" ] || return 0 2>/dev/null || exit 0
+archive_root="${sysroot}/var"
+var_mount=""
+var_mounted=0
+target_mount=""
+target_readonly=0
+staging=""
+cleanup_var_mount() {
+    [ -n "${var_mount}" ] || return 0
+    if [ "${var_mounted}" -eq 1 ]; then
+        if ! umount "${var_mount}"; then
+            echo "bootrecov: cannot unmount temporary /var archive mount" >&2
+            return 1
+        fi
+        var_mounted=0
+    fi
+    rmdir "${var_mount}" 2>/dev/null || true
+    var_mount=""
+}
+cleanup_restore_mounts() {
+    cleanup_failed=0
+    [ -z "${staging}" ] || rm -rf "${staging}"
+    cleanup_var_mount || cleanup_failed=1
+    if [ "${target_readonly}" -eq 1 ]; then
+        if ! mount -o remount,ro -- "${target_mount}"; then
+            echo "bootrecov: cannot restore read-only mode of ${target_mount}" >&2
+            cleanup_failed=1
+        fi
+    fi
+    return "${cleanup_failed}"
+}
+trap 'cleanup_restore_mounts || exit 1' EXIT
+var_count=0
+var_spec=""
+var_fs=""
+var_opts=""
+if [ -r "${sysroot}/etc/fstab" ]; then
+    while read -r spec mount_path fs opts rest || [ -n "${spec}" ]; do
+        case "${spec}" in ""|\#*) continue ;; esac
+        [ "${mount_path}" = /var ] || continue
+        var_count=$((var_count + 1))
+        var_spec="${spec}"
+        var_fs="${fs}"
+        var_opts="${opts}"
+    done < "${sysroot}/etc/fstab"
+fi
+if [ "${var_count}" -gt 1 ]; then
+    echo "bootrecov: ambiguous /var mount in fstab; cannot locate module archive" >&2
+    return 0 2>/dev/null || exit 0
+fi
+if [ "${var_count}" -eq 1 ] && ! mountpoint -q "${sysroot}/var"; then
+    case "${var_spec}" in /dev/*|UUID=*|LABEL=*|PARTUUID=*|PARTLABEL=*) ;; *) echo "bootrecov: unsupported /var mount source in fstab" >&2; return 0 2>/dev/null || exit 0 ;; esac
+    case "${var_fs}" in btrfs|ext4|xfs) ;; *) echo "bootrecov: unsupported /var filesystem in fstab: ${var_fs}" >&2; return 0 2>/dev/null || exit 0 ;; esac
+    case "${var_opts}" in ""|-) var_opts=defaults ;; esac
+    var_mount="$(mktemp -d "${TMPDIR:-/run}/bootrecov-var.XXXXXX" 2>/dev/null)" || {
+        echo "bootrecov: cannot create temporary /var mountpoint" >&2
+        return 0 2>/dev/null || exit 0
+    }
+    if ! mount -t "${var_fs}" -o "${var_opts},ro" "${var_spec}" "${var_mount}"; then
+        echo "bootrecov: cannot mount separate /var to locate module archive" >&2
+        return 0 2>/dev/null || exit 0
+    fi
+    var_mounted=1
+    archive_root="${var_mount}"
+fi
+archive="${archive_root}/backups/bootrecov-snapshots/${name}/.bootrecov/root-modules/${version}.sqfs"
+
 [ -s "${archive}" ] || {
     echo "bootrecov: archived modules unavailable: ${archive}" >&2
     return 0 2>/dev/null || exit 0
 }
+
+mount_probe="${modules_parent}"
+while [ ! -e "${mount_probe}" ] && [ "${mount_probe}" != "${sysroot}" ]; do
+    mount_probe="${mount_probe%%/*}"
+done
+target_mount="$(findmnt -n -o TARGET -T "${mount_probe}" 2>/dev/null)" || {
+    echo "bootrecov: cannot identify module restore target mount" >&2
+    return 0 2>/dev/null || exit 0
+}
+case "${target_mount}" in
+    "${sysroot}"|"${sysroot}"/*) ;;
+    *) echo "bootrecov: module restore target mount lies outside the real root" >&2; return 0 2>/dev/null || exit 0 ;;
+esac
+target_options="$(findmnt -n -o VFS-OPTIONS -T "${mount_probe}" 2>/dev/null)" || {
+    echo "bootrecov: cannot identify module restore target mount mode" >&2
+    return 0 2>/dev/null || exit 0
+}
+case ",${target_options}," in
+    *,ro,*)
+        target_readonly=1
+        if ! mount -o remount,rw -- "${target_mount}"; then
+            echo "bootrecov: cannot make module restore target mount writable: ${target_mount}" >&2
+            return 0 2>/dev/null || exit 0
+        fi
+        ;;
+    *,rw,*) ;;
+    *) echo "bootrecov: unknown module restore target mount mode" >&2; return 0 2>/dev/null || exit 0 ;;
+esac
 
 mkdir -p "${modules_parent}" || {
     echo "bootrecov: cannot create ${modules_parent}" >&2
@@ -391,7 +597,9 @@ staging="$(mktemp -d "${modules_parent}/.bootrecov-restore.XXXXXX" 2>/dev/null)"
 
 if ! unsquashfs -d "${staging}" "${archive}" >/dev/null 2>&1; then
     echo "bootrecov: failed to restore modules from ${archive}" >&2
-    rm -rf "${staging}"
+    return 0 2>/dev/null || exit 0
+fi
+if ! cleanup_var_mount; then
     return 0 2>/dev/null || exit 0
 fi
 
@@ -411,13 +619,15 @@ if ! rm -f "${staging}/%s" || ! printf '%%s\n%%s\n' "${version}" "${inode}" > "$
 fi
 
 if mv "${staging}" "${target}"; then
+    staging=""
     chown -R 0:0 "${target}" 2>/dev/null || true
     echo "bootrecov: restored modules for ${version} from ${name}" >&2
 else
     echo "bootrecov: failed to move restored modules into ${target}" >&2
     rm -rf "${staging}"
 fi
-`, shellSingleQuote(rootModulesDir), restoredModuleMarker, restoredModuleMarker)
+)
+`, shellSingleQuote(mirrorRoot), shellSingleQuote(mirrorVisible), shellSingleQuote(rootModulesDir), restoredModuleMarker, restoredModuleMarker)
 }
 
 func regenerateDracutInitramfs() error {

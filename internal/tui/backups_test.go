@@ -33,6 +33,9 @@ func setupDirs(t *testing.T) (string, string, string, string) {
 
 func setTestGlobals(t *testing.T, boot, snap, efi, grub string) {
 	t.Helper()
+	oldDracutConfigPath := DracutConfigPath
+	DracutConfigPath = filepath.Join(filepath.Dir(grub), "dracut", "conf.d", "95-bootrecov.conf")
+	t.Cleanup(func() { DracutConfigPath = oldDracutConfigPath })
 	oldRecoveryLockDir := RecoveryLockDir
 	RecoveryLockDir = filepath.Join(filepath.Dir(grub), "recovery-lock")
 	t.Cleanup(func() { RecoveryLockDir = oldRecoveryLockDir })
@@ -921,6 +924,33 @@ func TestAddRemoveGrubEntryForSyncedPair(t *testing.T) {
 	}
 }
 
+func TestGrubRecoveryReplacesInheritedSnapshotIdentity(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
+	writeFileWithContent(t, kernelCmdlinePath, "BOOT_IMAGE=/old-mirror/old/vmlinuz rw bootrecov_entry=bootrecov-old bootrecov_snapshot=old quiet\n")
+	makeBootableBackup(t, snap, "pair")
+	makeBootableBackup(t, efi, "pair")
+	if err := AddGrubEntry(BootBackup{Name: "pair"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(grub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := string(data)
+	for _, want := range []string{"bootrecov_entry=" + backupIDForName("pair"), "bootrecov_snapshot=pair", " rw ", " quiet"} {
+		if !strings.Contains(entry, want) {
+			t.Fatalf("GRUB entry lacks %q: %s", want, entry)
+		}
+	}
+	for _, stale := range []string{"bootrecov_entry=bootrecov-old", "bootrecov_snapshot=old", "BOOT_IMAGE=/old-mirror"} {
+		if strings.Contains(entry, stale) {
+			t.Fatalf("GRUB entry inherited %q: %s", stale, entry)
+		}
+	}
+}
+
 func TestAddGrubEntryRejectsStaleEFIMirrorMissingBootArtifacts(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
@@ -1495,7 +1525,7 @@ func TestRenderMkinitcpioRuntimeHookRestoresModulesOnFallbackBoot(t *testing.T) 
 set -eu
 cat() {
   if [ "${1:-}" = "/proc/cmdline" ]; then
-    printf 'BOOT_IMAGE=/bootrecov-snapshots/snap/vmlinuz-linux bootrecov_entry=snap\n'
+    printf 'BOOT_IMAGE=/bootrecov-snapshots/snap/vmlinuz-linux bootrecov_entry=bootrecov-abcdef123456\n'
     return 0
   fi
   command cat "$@"
@@ -1536,6 +1566,51 @@ test -f "$newroot/custom/modules/%s/modules.dep"
 	}
 	if want := fmt.Sprintf("%s\n%d\n", version, info.Sys().(*syscall.Stat_t).Ino); string(marker) != want {
 		t.Fatalf("runtime restore marker = %q, want %q", marker, want)
+	}
+}
+
+func TestMkinitcpioRestoreUsesSnapshotMarkerWithCustomMirror(t *testing.T) {
+	boot, snap, efi, grub := setupDirs(t)
+	setTestGlobals(t, boot, snap, efi, grub)
+	version := "6.6.7-arch1-1"
+	newRoot := filepath.Join(t.TempDir(), "new-root")
+	archive := filepath.Join(newRoot, "var", "backups", "bootrecov-snapshots", "snap", ".bootrecov", "root-modules", version+".sqfs")
+	writeFile(t, archive)
+	scriptPath := filepath.Join(t.TempDir(), "run-hook.sh")
+	script := fmt.Sprintf(`#!/bin/sh
+set -e
+cat() {
+  if [ "${1:-}" = "/proc/cmdline" ]; then
+    printf 'BOOT_IMAGE=/custom-recovery/snap/vmlinuz-linux bootrecov_entry=bootrecov-abcdef123456 bootrecov_snapshot=snap\n'
+    return 0
+  fi
+  command cat "$@"
+}
+uname() {
+  if [ "${1:-}" = "-r" ]; then printf '%%s\n' %s; return 0; fi
+  command uname "$@"
+}
+unsquashfs() {
+  [ "${1:-}" = "-d" ] || return 2
+  mkdir -p "$2"
+  printf 'restored\n' >"$2/modules.dep"
+}
+newroot=%s
+%s
+run_latehook
+test -f "$newroot%s/%s/modules.dep"
+`, shellSingleQuote(version), shellSingleQuote(newRoot), renderMkinitcpioRuntimeHook(), RootModulesDir, version)
+	writeExecutable(t, scriptPath, script)
+	if out, err := exec.Command("sh", scriptPath).CombinedOutput(); err != nil {
+		t.Fatalf("custom mirror restore failed: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+}
+
+func TestDracutRestoreUsesSnapshotMarkerWithCustomMirror(t *testing.T) {
+	out, restored := runRestoreIdentityFixture(t, true,
+		"BOOT_IMAGE=/custom-recovery/snap/vmlinuz bootrecov_entry=bootrecov-abcdef123456 bootrecov_snapshot=snap", "snap")
+	if !restored {
+		t.Fatalf("custom mirror dracut restore failed: %s", out)
 	}
 }
 
@@ -1740,7 +1815,8 @@ func TestInstallFedoraHooksWritesDNFAndDracutFiles(t *testing.T) {
 		t.Fatal("expected Fedora hooks to be installed")
 	}
 	checks := map[string][]string{
-		DNF5ActionsPath: {"pre_transaction:kernel*:::/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now", "post_transaction:kernel*:::/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook reconcile-active", "pre_transaction:grub*:::"},
+		DNF5ActionsPath:  {"pre_transaction:kernel*:::/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook backup-now", "post_transaction:kernel*:::/usr/bin/env BOOTRECOV_ACCEPT_RISK=1 /usr/bin/bootrecov hook reconcile-active", "pre_transaction:grub*:::"},
+		DracutConfigPath: {"force_add_dracutmodules+=\" bootrecov \""},
 		filepath.Join(DracutModuleDir, "module-setup.sh"):      {"inst_hook pre-pivot 95"},
 		filepath.Join(DracutModuleDir, "bootrecov-restore.sh"): {"bootrecov_entry=", "/sysroot", "unsquashfs -d"},
 	}
@@ -1768,6 +1844,9 @@ func TestInstallFedoraHooksWritesDNFAndDracutFiles(t *testing.T) {
 	}
 	if PlatformHooksInstalled() {
 		t.Fatal("expected Fedora hooks to be uninstalled")
+	}
+	if fileExists(DracutConfigPath) {
+		t.Fatal("Fedora hook uninstall left its dracut inclusion config behind")
 	}
 }
 
@@ -2123,7 +2202,7 @@ func TestAddGrubEntryPrefersFedoraBLSWhenUsable(t *testing.T) {
 		"title Bootrecov " + filepath.Join(efi, "pair"),
 		"linux " + blsVisiblePath(filepath.Join(efi, "pair", "vmlinuz")),
 		"initrd " + blsVisiblePath(filepath.Join(efi, "pair", "initrd.img")),
-		"options $kernelopts bootrecov_entry=" + id,
+		"options $kernelopts bootrecov_entry=" + id + " bootrecov_snapshot=pair",
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("expected BLS entry to contain %q:\n%s", want, text)

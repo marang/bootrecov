@@ -164,6 +164,7 @@ BOOTRECOV_DNF5_ACTIONS_PATH=/etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.acti
 BOOTRECOV_DNF4_PRE_ACTIONS_PATH=/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action
 BOOTRECOV_DNF4_POST_ACTIONS_PATH=/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action
 BOOTRECOV_DRACUT_MODULE_DIR=/usr/lib/dracut/modules.d/95bootrecov
+BOOTRECOV_DRACUT_CONFIG_PATH=/etc/dracut.conf.d/95-bootrecov.conf
 BOOTRECOV_DRACUT_BIN=dracut
 ```
 
@@ -436,7 +437,7 @@ Hook-created snapshots are stored only in `/var/backups/bootrecov-snapshots`; th
 
 After the transaction, the post hook reconciles active Bootrecov entries. This restores archived module trees for already-active fallback kernels if the package update removed `/usr/lib/modules/<old-version>`, then refreshes active boot mirrors and bootloader state. Post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction.
 
-The mkinitcpio runtime hook is a second safety net for BusyBox-based initramfs images. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. The root module directory comes from Bootrecov's detected/configured `RootModulesDir` and defaults to `/usr/lib/modules`. A systemd-based mkinitcpio image does not run this BusyBox runtime hook; Bootrecov does not install a systemd initramfs unit. Fedora uses the dracut module described below.
+The mkinitcpio runtime hook is a second safety net for BusyBox-based initramfs images. During a Bootrecov GRUB fallback boot, it runs from the initramfs after the real root is mounted at `/new_root`. If `/new_root/usr/lib/modules/<fallback-version>` is missing, it extracts the snapshot's archived SquashFS module tree into that expected path before normal userspace starts. New recovery entries carry both `bootrecov_entry=<id>` and `bootrecov_snapshot=<name>`, so a custom active mirror name does not prevent boot-time restore. The hook validates the snapshot name, rejects conflicting or ambiguous boot parameters, and reports a missing archive. Existing entries without the new snapshot parameter can still use their Bootrecov entry marker and `BOOT_IMAGE` path; the legacy default path also remains supported. The root module directory comes from Bootrecov's detected/configured `RootModulesDir` and defaults to `/usr/lib/modules`. A systemd-based mkinitcpio image does not run this BusyBox runtime hook; Bootrecov does not install a systemd initramfs unit. Fedora uses the dracut module described below.
 
 On Fedora-family systems, `bootrecov hook install` installs DNF action files when a supported action plugin directory exists and installs a dracut module:
 
@@ -446,9 +447,10 @@ On Fedora-family systems, `bootrecov hook install` installs DNF action files whe
 /etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action
 /usr/lib/dracut/modules.d/95bootrecov/module-setup.sh
 /usr/lib/dracut/modules.d/95bootrecov/bootrecov-restore.sh
+/etc/dracut.conf.d/95-bootrecov.conf
 ```
 
-DNF5 systems need `libdnf5-plugin-actions`. DNF4 systems need `python3-dnf-plugin-pre-transaction-actions` and `python3-dnf-plugin-post-transaction-actions`. When both plugin layouts exist, Bootrecov installs only the DNF5 action file to avoid duplicate transaction hooks. If no supported DNF action directory exists, hook installation fails clearly instead of creating inert files. The dracut hook runs during fallback boots after the real root is mounted at `/sysroot` and restores missing archived modules into `/sysroot/usr/lib/modules/<fallback-version>`. Fedora/BLS GRUB boots may not preserve Bootrecov's custom kernel marker, so the dracut hook also recognizes fallback boots from a `BOOT_IMAGE` path under `bootrecov-snapshots`.
+DNF5 systems need `libdnf5-plugin-actions`. DNF4 systems need `python3-dnf-plugin-pre-transaction-actions` and `python3-dnf-plugin-post-transaction-actions`. When both plugin layouts exist, Bootrecov installs only the DNF5 action file to avoid duplicate transaction hooks. If no supported DNF action directory exists, hook installation fails clearly instead of creating inert files. The dracut configuration includes Bootrecov's restore hook in host-only initramfs images, including images generated after kernel updates. The hook runs during fallback boots after the real root is mounted at `/sysroot` and restores missing archived modules into `/sysroot/usr/lib/modules/<fallback-version>`. For a separate local `/var` filesystem, it reads the archive through a temporary read-only mount selected from the real root's `fstab` and unmounts it before pivot. It supports Btrfs, ext4, and XFS `/var` entries with local device or UUID/LABEL sources; other layouts produce a clear diagnostic. If the module destination is mounted read-only, the hook temporarily remounts that filesystem writable and restores its original read-only mode after success or failure. It uses the same validated snapshot identity as mkinitcpio. Fedora's GRUB/BLS boot can omit entry parameters from the actual kernel command line; when they are absent, the dracut hook accepts a validated `BOOT_IMAGE` under the mirror path embedded at hook installation or the legacy `bootrecov-snapshots` path. Reinstall the hook after changing the mirror path so its embedded path stays current. Hook installation regenerates live initramfs images; it does not rewrite initramfs images already saved in recovery snapshots. Create new snapshots after updating the hooks to include the updated restore behavior.
 
 ```mermaid
 flowchart TD
@@ -657,10 +659,10 @@ Useful targets:
 - `make fmt`: run `gofmt`
 - `make test`: run vet, tests, race tests, and coverage
 - `make test-bootvm`: run the rootless VM integration test
-- `make test-bootvm-arch-grub-cleanup`: boot Arch recoveries through GRUB, check module/DKMS cleanup, refuse systemd mkinitcpio, and boot a real BusyBox initramfs that restores missing modules
+- `make test-bootvm-arch-grub-cleanup`: boot Arch recoveries through GRUB from a custom `/custom-recovery` mirror, check module/DKMS cleanup, refuse systemd mkinitcpio, and boot a real BusyBox initramfs that restores missing modules
 - `make test-bootvm-ubuntu-grub`: run the explicit Ubuntu + GRUB VM gate
 - `make test-bootvm-debian-grub`: run the explicit Debian + GRUB VM gate
-- `make test-bootvm-fedora-grub-bls`: run the explicit Fedora + GRUB/BLS VM gate
+- `make test-bootvm-fedora-grub-bls`: boot Fedora GRUB/BLS recoveries from a custom `/boot/custom-recovery` mirror and verify real dracut module restore
 - `make test-bootvm-grub-matrix`: run both Ubuntu + GRUB and Debian + GRUB gates
 - `make test-bootvm-platform-matrix`: run Ubuntu, Debian, and Fedora GRUB gates
 - `make test-bootvm-watch`: run the VM test in tmux watch mode

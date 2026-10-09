@@ -73,6 +73,7 @@ var (
 	DNF4PreActionsPath          = "/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action"
 	DNF4PostActionsPath         = "/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action"
 	DracutModuleDir             = "/usr/lib/dracut/modules.d/95bootrecov"
+	DracutConfigPath            = "/etc/dracut.conf.d/95-bootrecov.conf"
 	DracutBin                   = "dracut"
 	UpdateInitramfs             = true
 	RcloneBin                   = "rclone"
@@ -364,26 +365,102 @@ func renderMkinitcpioRuntimeHook() string {
 		rootModulesDir = "/usr/lib/modules"
 	}
 	return fmt.Sprintf(`run_latehook() {
-    local cmdline entry boot_image has_marker name version root_modules_dir archive modules_parent target staging inode
+    local cmdline entry boot_image image_path image_name has_marker entry_count entry_id entry_suffix image_count marker_count marker_name name version root_modules_dir archive modules_parent target staging inode
 
     cmdline="$(cat /proc/cmdline 2>/dev/null || true)"
     has_marker=0
-    case " ${cmdline} " in
-        *" bootrecov_entry="*) has_marker=1 ;;
-    esac
-
+    entry_count=0
+    entry_id=""
+    image_count=0
+    image_path=""
+    marker_count=0
+    marker_name=""
+    name=""
     for entry in ${cmdline}; do
         case "${entry}" in
+            BOOT_IMAGE=*) image_count=$((image_count + 1)); image_path="${entry#BOOT_IMAGE=}" ;;
+        esac
+        case "${entry}" in
+            bootrecov_entry=*)
+                has_marker=1
+                entry_count=$((entry_count + 1))
+                entry_id="${entry#bootrecov_entry=}"
+                ;;
+            bootrecov_snapshot=*)
+                marker_count=$((marker_count + 1))
+                marker_name="${entry#bootrecov_snapshot=}"
+                ;;
             BOOT_IMAGE=/bootrecov-snapshots/*)
                 boot_image="${entry#BOOT_IMAGE=/bootrecov-snapshots/}"
-                name="${boot_image%%/*}"
+                case "${boot_image}" in */*/*) ;; */*) name="${boot_image%%/*}" ;; esac
                 ;;
 			BOOT_IMAGE=*/bootrecov-snapshots/*)
 				boot_image="${entry#*/bootrecov-snapshots/}"
-				name="${boot_image%%/*}"
+				case "${boot_image}" in */*/*) ;; */*) name="${boot_image%%/*}" ;; esac
 				;;
         esac
     done
+
+    if [ "${entry_count}" -gt 1 ]; then
+        echo "bootrecov: ambiguous Bootrecov entry marker" >&2
+        return 0
+    fi
+    if [ "${entry_count}" -eq 1 ]; then
+        case "${entry_id}" in bootrecov-*) entry_suffix="${entry_id#bootrecov-}" ;; *) entry_suffix="" ;; esac
+        case "${entry_suffix}" in
+            *[!0-9a-f]*|"") echo "bootrecov: invalid Bootrecov entry marker" >&2; return 0 ;;
+        esac
+        if [ "${#entry_suffix}" -ne 12 ]; then
+            echo "bootrecov: invalid Bootrecov entry marker" >&2
+            return 0
+        fi
+    fi
+
+    if [ "${image_count}" -gt 1 ]; then
+        echo "bootrecov: ambiguous snapshot identity: multiple BOOT_IMAGE values" >&2
+        return 0
+    fi
+    case "${image_path}" in
+        *"//"*|*/./*|*/../*|*/.|*/..|*/)
+            echo "bootrecov: invalid BOOT_IMAGE path" >&2
+            return 0
+            ;;
+    esac
+    image_name=""
+    case "${image_path}" in
+        */*/*)
+            boot_image="${image_path%%/*}"
+            image_name="${boot_image##*/}"
+            ;;
+    esac
+
+    if [ "${marker_count}" -gt 1 ]; then
+        echo "bootrecov: ambiguous snapshot identity: multiple snapshot markers" >&2
+        return 0
+    fi
+    if [ "${marker_count}" -eq 1 ] && [ -z "${marker_name}" ]; then
+        echo "bootrecov: refusing invalid snapshot name: empty snapshot marker" >&2
+        return 0
+    fi
+    if [ "${marker_count}" -eq 1 ]; then
+        case "${marker_name}" in
+            [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) echo "bootrecov: refusing invalid snapshot name: ${marker_name}" >&2; return 0 ;;
+        esac
+    fi
+    if [ "${marker_count}" -eq 1 ] && [ "${has_marker}" -eq 0 ]; then
+        echo "bootrecov: snapshot parameter found without Bootrecov entry marker" >&2
+        return 0
+    fi
+
+    if [ "${marker_count}" -eq 0 ] && [ "${has_marker}" -eq 1 ] && [ -n "${image_name}" ]; then
+        name="${image_name}"
+    fi
+
+    if [ -n "${marker_name}" ] && [ -n "${image_name}" ] && [ "${marker_name}" != "${image_name}" ]; then
+        echo "bootrecov: conflicting snapshot identities in boot parameters" >&2
+        return 0
+    fi
+    [ -z "${marker_name}" ] || name="${marker_name}"
 
     [ -n "${name}" ] || {
         [ "${has_marker}" -eq 0 ] || echo "bootrecov: fallback marker found but snapshot name could not be parsed" >&2
@@ -391,7 +468,7 @@ func renderMkinitcpioRuntimeHook() string {
     }
 
     case "${name}" in
-        .|..|/*|*/*|*" "*) echo "bootrecov: refusing invalid snapshot name: ${name}" >&2; return 0 ;;
+        [!A-Za-z0-9]*|*[!A-Za-z0-9._-]*) echo "bootrecov: refusing invalid snapshot name: ${name}" >&2; return 0 ;;
     esac
 
     version="$(uname -r)"

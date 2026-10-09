@@ -113,10 +113,7 @@ func addGrubEntry(b BootBackup) error {
 	}
 	perm := st.Mode().Perm() | 0o111
 
-	cmdline := currentKernelCmdline()
-	if !strings.Contains(cmdline, kernelCmdlineMarker) {
-		cmdline = strings.TrimSpace(cmdline + " " + kernelCmdlineMarker + id)
-	}
+	cmdline := recoveryKernelCmdline(name, id)
 	entry := fmt.Sprintf("cat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n"+
 		"    search --file --set=root %s/%s\n"+
 		"    linux %s/%s %s\n"+
@@ -158,7 +155,7 @@ func currentKernelCmdline() string {
 	fields := strings.Fields(string(data))
 	filtered := make([]string, 0, len(fields))
 	for _, f := range fields {
-		if strings.HasPrefix(f, "BOOT_IMAGE=") || strings.HasPrefix(f, "initrd=") {
+		if strings.HasPrefix(f, "BOOT_IMAGE=") || strings.HasPrefix(f, "initrd=") || strings.HasPrefix(f, kernelCmdlineMarker) || strings.HasPrefix(f, "bootrecov_snapshot=") {
 			continue
 		}
 		filtered = append(filtered, f)
@@ -167,6 +164,10 @@ func currentKernelCmdline() string {
 		return "rw"
 	}
 	return strings.Join(filtered, " ")
+}
+
+func recoveryKernelCmdline(name, id string) string {
+	return strings.TrimSpace(currentKernelCmdline() + " " + kernelCmdlineMarker + id + " bootrecov_snapshot=" + name)
 }
 
 func ensureGrubFile() error {
@@ -453,10 +454,7 @@ func RecoveryCommands(name string) (string, error) {
 
 	grubPath := grubVisiblePath(canonical.EFIPath)
 	id := backupIDForName(canonical.Name)
-	cmdline := currentKernelCmdline()
-	if !strings.Contains(cmdline, kernelCmdlineMarker) {
-		cmdline = strings.TrimSpace(cmdline + " " + kernelCmdlineMarker + id)
-	}
+	cmdline := recoveryKernelCmdline(canonical.Name, id)
 	return strings.Join([]string{
 		fmt.Sprintf("search --file --set=root %s/%s", grubPath, canonical.KernelImage),
 		fmt.Sprintf("linux %s/%s %s", grubPath, canonical.KernelImage, cmdline),
