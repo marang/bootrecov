@@ -21,7 +21,7 @@ source /var/lib/bootrecov-vm-test/versions
 work=/var/lib/bootrecov-vm-test/mkinitcpio
 mkdir -p "$work/presets" "$work/initcpio/install" "$work/initcpio/hooks"
 export BOOTRECOV_ACCEPT_RISK=1 BOOTRECOV_PLATFORM=arch BOOTRECOV_BOOTLOADER=grub
-export BOOTRECOV_BOOT_DIR=/boot BOOTRECOV_ESP_DIR="$ESP" BOOTRECOV_EFI_MIRROR_DIR=/bootrecov-snapshots
+export BOOTRECOV_BOOT_DIR=/boot BOOTRECOV_ESP_DIR="$ESP" BOOTRECOV_EFI_MIRROR_DIR=/custom-recovery
 export BOOTRECOV_MKINITCPIO_CONF="$work/busybox.conf"
 export BOOTRECOV_MKINITCPIO_INSTALL_HOOK="$work/initcpio/install/bootrecov"
 export BOOTRECOV_MKINITCPIO_RUNTIME_HOOK="$work/initcpio/hooks/bootrecov"
@@ -80,6 +80,8 @@ PRESET
 verify)
   [[ $(uname -r) == "$B" ]] || fail "expected fallback kernel $B, running $(uname -r)"
   grep -q 'bootrecov_entry=' /proc/cmdline || fail 'did not boot a Bootrecov recovery entry'
+  grep -q 'bootrecov_snapshot=keep' /proc/cmdline || fail 'snapshot identity marker is missing'
+  grep -q 'BOOT_IMAGE=/custom-recovery/keep/' /proc/cmdline || fail 'did not boot from the custom mirror path'
   target="/usr/lib/modules/$B"
   [[ -d $target && -s $target/modules.dep ]] || fail 'runtime hook did not restore the module tree'
   [[ -f $target/.bootrecov-restored && ! -L $target/.bootrecov-restored ]] || fail 'runtime hook did not mark restored modules'

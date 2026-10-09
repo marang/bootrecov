@@ -136,6 +136,9 @@ func ApplyEnvironmentOverridesFromEnv() {
 	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DRACUT_MODULE_DIR")); v != "" {
 		DracutModuleDir = filepath.Clean(v)
 	}
+	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DRACUT_CONFIG_PATH")); v != "" {
+		DracutConfigPath = filepath.Clean(v)
+	}
 	if v := strings.TrimSpace(os.Getenv("BOOTRECOV_DRACUT_BIN")); v != "" {
 		DracutBin = v
 	}

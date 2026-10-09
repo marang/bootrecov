@@ -33,6 +33,7 @@ Important behavior:
 - module archives live under `.bootrecov/root-modules/<kernel-version>.sqfs` inside the snapshot source
 - module archives are not copied into active boot mirrors
 - activation restores an archived `/usr/lib/modules/<kernel-version>` tree automatically when the live root module tree is missing
+- generated recovery entries carry a validated snapshot-name marker for boot-time module restore with custom active mirror names; existing entries can use their Bootrecov entry marker and `BOOT_IMAGE` path, while conflicting or ambiguous identities stop restore
 - activation must not overwrite an existing `/usr/lib/modules/<kernel-version>` tree
 - Bootrecov marks newly restored module trees and cleans them up on Arch after their last recovery entry is removed when kernel, package, and ownership checks pass; unsupported distributions and unmarked trees remain untouched
 - Arch module cleanup removes matching DKMS builds only for unused, inode-marked restored trees; active recoveries (including Bootrecov's generated `search --file` entries), the running kernel, installed package files, and snapshots without module archives protect their kernel versions
@@ -146,6 +147,7 @@ Normal operation typically requires elevated privileges because the app writes t
 - `/boot/bootrecov-snapshots` on Fedora/BLS systems
 - `/usr/lib/modules/<kernel-version>` when restoring a missing archived module tree
 - `/etc/grub.d/41_bootrecov_snapshots`
+- `/etc/dracut.conf.d/95-bootrecov.conf` on Fedora-family systems when installing restore hooks
 - `/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook` and `/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook` on Arch
 - `/usr/lib/initcpio/install/bootrecov`, `/usr/lib/initcpio/hooks/bootrecov`, and `/etc/mkinitcpio.conf` on Arch/mkinitcpio
   These hooks are created by explicit opt-in and removed by `bootrecov hook uninstall` or by the package removal script when uninstalling the Arch package. Removal also drops `bootrecov` from `HOOKS=(...)` and regenerates initramfs images when `mkinitcpio` is available.
@@ -170,11 +172,12 @@ Environment overrides:
 - `BOOTRECOV_DNF4_PRE_ACTIONS_PATH=/etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action`
 - `BOOTRECOV_DNF4_POST_ACTIONS_PATH=/etc/dnf/plugins/post-transaction-actions.d/95-bootrecov.action`
 - `BOOTRECOV_DRACUT_MODULE_DIR=/usr/lib/dracut/modules.d/95bootrecov`
+- `BOOTRECOV_DRACUT_CONFIG_PATH=/etc/dracut.conf.d/95-bootrecov.conf`
 - `BOOTRECOV_DRACUT_BIN=dracut`
 
 Path detection should handle common `/boot/efi`, `/efi`, and ESP-at-`/boot` layouts conservatively. Fedora-family BLS layouts should default active mirrors to `/boot/bootrecov-snapshots` when BLS entries are present and no explicit mirror override is set. Explicit environment overrides always take precedence.
 Arch/mkinitcpio hook path detection should use the `mkinitcpio` binary from `PATH`, existing mkinitcpio config, and existing initcpio hook directories before falling back to defaults. Do not apply Arch/mkinitcpio paths to other initramfs backends. The runtime hook uses BusyBox `run_latehook`; installation inspects literal `HOOKS`, drop-ins, and presets, and refuses systemd or ambiguous configurations before writing files. `doctor` reports the mode or refusal reason; `HookInstalled` requires an effective BusyBox hook.
-Fedora-family hook installation uses DNF action plugin directories only when present, prefers DNF5 over DNF4 when both are installed, scopes actions to boot-critical package filters, and installs a dracut module for boot-time restore.
+Fedora-family hook installation uses DNF action plugin directories only when present, prefers DNF5 over DNF4 when both are installed, scopes actions to boot-critical package filters, and installs a dracut module plus a persistent dracut configuration that includes it in host-only images.
 If multiple bootloader signals are detected, report ambiguity and require/accept `BOOTRECOV_BOOTLOADER` to choose the intended backend instead of guessing.
 
 ## Backup Profiles
@@ -220,8 +223,8 @@ Current Arch action:
 - if snapshot space is insufficient, the hook prints a warning and exits successfully so the package transaction is not blocked
 - non-space pre-transaction errors still fail the hook
 - post-transaction reconcile errors are printed as warnings and do not fail the completed package transaction
-- BusyBox-mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/<configured-root-modules-dir>/<kernel-version>`, normally `/new_root/usr/lib/modules/<kernel-version>`, only for Bootrecov GRUB fallback boots. Systemd-based mkinitcpio images have no Bootrecov restore unit.
-- Fedora/dracut boot-time restore runs as a pre-pivot dracut hook after root is mounted at `/sysroot`; it recognizes either Bootrecov's kernel marker or a `BOOT_IMAGE` path under `bootrecov-snapshots`; initramfs-tools support is planned but not implemented
+- BusyBox-mkinitcpio boot-time restore runs as a late hook after root is mounted at `/new_root`; it extracts archived modules into `/new_root/<configured-root-modules-dir>/<kernel-version>`, normally `/new_root/usr/lib/modules/<kernel-version>`. It validates the new snapshot-name marker or a compatible existing entry's `BOOT_IMAGE` path; an unmarked legacy default `BOOT_IMAGE` path also works. Systemd-based mkinitcpio images have no Bootrecov restore unit.
+- Fedora/dracut boot-time restore runs as a pre-pivot dracut hook after root is mounted at `/sysroot` with the same snapshot-identity checks. Its configuration forces inclusion in host-only initramfs images. If `/var` is a separate local Btrfs, ext4, or XFS filesystem, the hook mounts the fstab-selected filesystem read-only in a private initramfs directory to read the archive and unmounts it before pivot. It temporarily makes a read-only module destination mount writable and restores its original mode on success and failure. Markerless GRUB/BLS boots can use a validated `BOOT_IMAGE` under the mirror path embedded when the hook was installed or under the legacy `bootrecov-snapshots` path; changing the mirror path requires reinstalling the hook. Hook updates rebuild live initramfs images, not images already saved in snapshots; create new snapshots to include updated hooks. Initramfs-tools support is planned but not implemented
 
 Ubuntu/Debian apt/dpkg hooks are planned but not implemented.
 

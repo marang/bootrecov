@@ -617,7 +617,8 @@ GRUB_CUSTOM=/etc/grub.d/41_bootrecov_snapshots
 BOOTRECOV_ENV=(BOOTRECOV_ACCEPT_RISK=1 NO_COLOR=1)
 BOOTRECOV_MIRROR_ROOT=/boot/efi/bootrecov-snapshots
 if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
-  BOOTRECOV_MIRROR_ROOT=/boot/bootrecov-snapshots
+  BOOTRECOV_MIRROR_ROOT=/boot/custom-recovery
+  BOOTRECOV_ENV+=(BOOTRECOV_EFI_MIRROR_DIR="${BOOTRECOV_MIRROR_ROOT}")
 fi
 BACKUP_DIR="${BOOTRECOV_MIRROR_ROOT}/2026-smoke"
 
@@ -697,10 +698,19 @@ fi
 if [[ -z "${INITRD_SRC}" || ! -f "${INITRD_SRC}" ]]; then
   INITRD_SRC="$(ls -1 /boot/initramfs-*.img 2>/dev/null | head -n1 || true)"
 fi
+if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+  KERNEL_SRC="/boot/vmlinuz-$(uname -r)"
+  INITRD_SRC="/boot/initramfs-$(uname -r).img"
+fi
 if [[ -z "${KERNEL_SRC}" || -z "${INITRD_SRC}" ]]; then
   echo "[guest] failed to locate kernel/initrd sources" >&2
   exit 1
 fi
+if [[ ! -f "${KERNEL_SRC}" || ! -f "${INITRD_SRC}" ]]; then
+  echo "[guest] kernel/initrd sources do not exist: ${KERNEL_SRC} ${INITRD_SRC}" >&2
+  exit 1
+fi
+echo "[guest] selected boot artifacts: kernel=${KERNEL_SRC} initrd=${INITRD_SRC}"
 echo "[guest] setup start"
 sudo chmod +x /tmp/bootrecov
 case "${EXPECTED_PLATFORM}" in
@@ -773,9 +783,14 @@ else
   }
   sudo cat /tmp/bootrecov-hook-install.log || true
   if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
-    if [[ ! -f /usr/lib/dracut/modules.d/95bootrecov/module-setup.sh || ! -f /usr/lib/dracut/modules.d/95bootrecov/bootrecov-restore.sh ]]; then
-      echo "[guest] Fedora hook install did not create dracut module files" >&2
+    if [[ ! -f /usr/lib/dracut/modules.d/95bootrecov/module-setup.sh || ! -f /usr/lib/dracut/modules.d/95bootrecov/bootrecov-restore.sh || ! -f /etc/dracut.conf.d/95-bootrecov.conf ]]; then
+      echo "[guest] Fedora hook install did not create dracut module and config files" >&2
       sudo find /usr/lib/dracut/modules.d -maxdepth 2 -name '*bootrecov*' -print || true
+      exit 1
+    fi
+    sudo lsinitrd "${INITRD_SRC}" >/tmp/bootrecov-lsinitrd.log
+    if ! grep -q 'bootrecov-restore.sh' /tmp/bootrecov-lsinitrd.log; then
+      echo "[guest] selected Fedora initramfs does not contain the Bootrecov restore hook: ${INITRD_SRC}" >&2
       exit 1
     fi
     if [[ ! -f /etc/dnf/libdnf5-plugins/actions.d/95-bootrecov.actions && ! -f /etc/dnf/plugins/pre-transaction-actions.d/95-bootrecov.action ]]; then
@@ -932,6 +947,10 @@ sudo cp -f "${KERNEL_SRC}" "${BACKUP_DIR}/vmlinuz"
 sudo cp -f "${INITRD_SRC}" "${BACKUP_DIR}/initrd.img"
 sudo cp -f "${KERNEL_SRC}" "${SNAPSHOT_DIR}/vmlinuz"
 sudo cp -f "${INITRD_SRC}" "${SNAPSHOT_DIR}/initrd.img"
+if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+  sudo mkdir -p "${SNAPSHOT_DIR}/.bootrecov/root-modules"
+  sudo cp -f "${MODULE_IMAGE}" "${SNAPSHOT_DIR}/.bootrecov/root-modules/${KERNEL_VERSION}.sqfs"
+fi
 
 echo "[guest] grub before (bootrecov entries):"
 print_bootrecov_entries "${GRUB_CUSTOM}" "grub-before"
@@ -970,6 +989,11 @@ if [[ -z "${ENTRY_ID}" ]]; then
   exit 1
 fi
 echo "detected backup entry id: ${ENTRY_ID}"
+
+if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+  set_status "preparing-dracut-runtime-restore"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo rm -rf "/usr/lib/modules/$(uname -r)"'
+fi
 
 set_status "preparing-grub-reboot"
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "EXPECTED_PLATFORM='${EXPECTED_PLATFORM}' ENTRY_ID='${ENTRY_ID}' bash -se" <<'EOF'
@@ -1027,11 +1051,23 @@ set_status "reboot-test-1"
 reboot_and_wait
 CMDLINE_1="$(ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "cat /proc/cmdline" | tr -d '\r')"
 echo "post-reboot #1 cmdline: ${CMDLINE_1}"
-if [[ "${CMDLINE_1}" != *"bootrecov_entry=${ENTRY_ID}"* && "${CMDLINE_1}" != *"/bootrecov-snapshots/2026-smoke/"* ]]; then
+if [[ "${CMDLINE_1}" != *"bootrecov_entry=${ENTRY_ID}"* && "${CMDLINE_1}" != *"/bootrecov-snapshots/2026-smoke/"* && "${CMDLINE_1}" != *"/custom-recovery/2026-smoke/"* ]]; then
   echo "expected boot marker bootrecov_entry=${ENTRY_ID} or bootrecov snapshot BOOT_IMAGE not found after reboot #1" >&2
   exit 1
 fi
 echo "reboot #1 verified: booted backup GRUB entry."
+if [[ "${EXPECTED_PLATFORM}" == "fedora" ]]; then
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'bash -se' <<'EOF'
+set -euo pipefail
+target="/usr/lib/modules/$(uname -r)"
+sudo test -f "${target}/modules.dep"
+sudo test -f "${target}/.bootrecov-restored"
+marker="$(sudo cat "${target}/.bootrecov-restored")"
+expected="$(printf '%s\n%s' "$(uname -r)" "$(sudo stat -c %i "${target}")")"
+[[ "${marker}" == "${expected}" ]]
+echo "FEDORA_DRACUT_VERIFIED running=$(uname -r); real dracut runtime hook restored modules"
+EOF
+fi
 
 set_status "corrupting-primary-boot"
 ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "bash -se" <<'EOF'
@@ -1054,7 +1090,7 @@ ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "GRUB_REBOOT=\"\$(command -v grub-r
 reboot_and_wait
 CMDLINE_2="$(ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" "cat /proc/cmdline" | tr -d '\r')"
 echo "post-reboot #2 cmdline: ${CMDLINE_2}"
-if [[ "${CMDLINE_2}" != *"bootrecov_entry=${ENTRY_ID}"* && "${CMDLINE_2}" != *"/bootrecov-snapshots/2026-smoke/"* ]]; then
+if [[ "${CMDLINE_2}" != *"bootrecov_entry=${ENTRY_ID}"* && "${CMDLINE_2}" != *"/bootrecov-snapshots/2026-smoke/"* && "${CMDLINE_2}" != *"/custom-recovery/2026-smoke/"* ]]; then
   echo "expected boot marker bootrecov_entry=${ENTRY_ID} or bootrecov snapshot BOOT_IMAGE not found after reboot #2" >&2
   exit 1
 fi

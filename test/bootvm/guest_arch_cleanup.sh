@@ -18,7 +18,7 @@ source /etc/os-release
 [[ -d /sys/firmware/efi ]] || fail 'requires a UEFI guest'
 [[ -x /tmp/bootrecov ]] || fail '/tmp/bootrecov is missing'
 export BOOTRECOV_ACCEPT_RISK=1 BOOTRECOV_PLATFORM=arch BOOTRECOV_BOOTLOADER=grub
-export BOOTRECOV_BOOT_DIR=/boot BOOTRECOV_EFI_MIRROR_DIR=/bootrecov-snapshots
+export BOOTRECOV_BOOT_DIR=/boot BOOTRECOV_EFI_MIRROR_DIR=/custom-recovery
 export BOOTRECOV_ROOT_MODULES_DIR=/usr/lib/modules
 state=/var/lib/bootrecov-vm-test
 mkdir -p "$state"
