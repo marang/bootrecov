@@ -97,6 +97,24 @@ func TestCleanupRemovalWithWindowsDualBoot(t *testing.T) {
 	}
 }
 
+func TestDeactivationCleansUnusedModulesWithInactiveUnknownSnapshot(t *testing.T) {
+	setupModuleCleanupTest(t)
+	const version = "6.1.0-old"
+	path := makeMarkedModules(t, version)
+	makeVersionedBootableBackup(t, SnapshotDir, "old", version)
+	writeFileWithContent(t, archivedModuleImagePath(filepath.Join(SnapshotDir, "old"), version), "archive")
+	if err := ActivateBackup("old"); err != nil {
+		t.Fatal(err)
+	}
+	makeBootableBackup(t, SnapshotDir, "ambiguous")
+	if err := DeactivateBackup("old"); err != nil {
+		t.Fatalf("inactive, unactivatable snapshot blocked cleanup: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("unused restored modules remained: %v", err)
+	}
+}
+
 // Arch's real 00_header uses assignments without the optional set command.
 func TestCleanupRemovalWithGRUBHeaderAssignments(t *testing.T) {
 	for _, remove := range []struct {

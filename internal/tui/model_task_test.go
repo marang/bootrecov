@@ -6,7 +6,28 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
+
+func TestTaskOutputIgnoresLateCommandEventsAfterClosingChannel(t *testing.T) {
+	output := make(chan string, 1)
+	var delayedSink func(string)
+	cmd := taskCmdWithOutput(output, func() tea.Msg {
+		delayedSink = commandOutputSink.current()
+		return nil
+	})
+	if msg := cmd(); msg != nil {
+		t.Fatalf("unexpected task result: %#v", msg)
+	}
+	if delayedSink == nil {
+		t.Fatal("task did not capture command output sink")
+	}
+	delayedSink("late progress")
+	if _, open := <-output; open {
+		t.Fatal("task output channel accepted an event after closing")
+	}
+}
 
 func TestModelRefreshesAfterCompletedRemovalWithCleanupWarning(t *testing.T) {
 	for _, tc := range []struct {

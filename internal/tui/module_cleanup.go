@@ -390,7 +390,10 @@ func restoredModuleProtectedVersions() (map[string]bool, error) {
 	for _, b := range backups {
 		if b.HasSnapshot && !b.HasArchivedModules {
 			if !validModuleVersion(b.KernelVersion) {
-				return nil, fmt.Errorf("snapshot %s has unknown kernel version and no module archive", b.Name)
+				// Unknown inactive snapshots cannot be activated, so they
+				// cannot require a particular restored module version.
+				// Active unknown entries were rejected above.
+				continue
 			}
 			protected[b.KernelVersion] = true
 		}

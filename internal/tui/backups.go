@@ -2,6 +2,7 @@ package tui
 
 import (
 	"crypto/sha1"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,7 @@ type GrubEntry struct {
 	ID         string
 	BackupPath string
 	Name       string
+	isBLS      bool
 }
 
 var (
@@ -100,6 +102,7 @@ const (
 )
 
 var backupNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+var kernelImageVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+(\.[0-9]+)?[-+~._A-Za-z0-9]*$`)
 
 // CreateBootBackupNow copies the current /boot tree to SnapshotDir.
 // EFI mirrors are created only when explicitly activated. The backup name is a
@@ -738,6 +741,93 @@ func (e *ReconcileCleanupWarning) Error() string {
 
 func (e *ReconcileCleanupWarning) Unwrap() error { return e.Cause }
 
+// ReconcileIssue describes a failed per-snapshot operation and the state left
+// after all independent snapshots and entry removal have been processed.
+type ReconcileIssue struct {
+	Snapshot      string
+	Operation     string
+	Cause         error
+	WasActive     bool
+	EntryRetained bool
+	MirrorPresent bool
+	BootReady     bool
+	StateUnknown  bool
+}
+
+type ReconcileAction struct {
+	Snapshot  string
+	Operation string
+}
+
+// ReconcilePartialError retains completed work and all per-snapshot failures.
+// StateVerified says whether the accompanying entry list reflects final state.
+type ReconcilePartialError struct {
+	Issues            []ReconcileIssue
+	Completed         []ReconcileAction
+	FinalizationError error
+	StateVerified     bool
+}
+
+func (i ReconcileIssue) String() string {
+	if i.StateUnknown {
+		return fmt.Sprintf("%s: %s: %v (entry, mirror, and boot state unverified)", i.Snapshot, i.Operation, i.Cause)
+	}
+	entry := "no entry"
+	if i.EntryRetained {
+		entry = "entry retained"
+	} else if i.WasActive {
+		entry = "entry removed"
+	}
+	return fmt.Sprintf("%s: %s: %v (%s, mirror present=%t, boot ready=%t)", i.Snapshot, i.Operation, i.Cause, entry, i.MirrorPresent, i.BootReady)
+}
+
+func (e *ReconcilePartialError) Error() string {
+	parts := make([]string, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		parts = append(parts, issue.String())
+	}
+	if e.FinalizationError != nil {
+		parts = append(parts, "finalization: "+e.FinalizationError.Error())
+	}
+	return "reconcile incomplete: " + strings.Join(parts, "; ")
+}
+
+func (e *ReconcilePartialError) Unwrap() error {
+	causes := make([]error, 0, len(e.Issues))
+	for _, issue := range e.Issues {
+		causes = append(causes, issue.Cause)
+	}
+	if e.FinalizationError != nil {
+		causes = append(causes, e.FinalizationError)
+	}
+	return errors.Join(causes...)
+}
+
+func reconcilePartialResult(issues []ReconcileIssue, completed []ReconcileAction, backups []BootBackup, activeByName map[string][]GrubEntry, stateVerified bool, finalizationErr error) *ReconcilePartialError {
+	if len(issues) == 0 && finalizationErr == nil {
+		return nil
+	}
+	for i := range issues {
+		_, issues[i].WasActive = activeByName[issues[i].Snapshot]
+		issues[i].StateUnknown = !stateVerified
+		if !stateVerified {
+			continue
+		}
+		for _, b := range backups {
+			if b.Name == issues[i].Snapshot {
+				issues[i].MirrorPresent = b.HasEFI
+				issues[i].BootReady = IsBootReady(b)
+				issues[i].EntryRetained = b.GrubEntryExists
+				break
+			}
+		}
+	}
+	return &ReconcilePartialError{Issues: issues, Completed: completed, FinalizationError: finalizationErr, StateVerified: stateVerified}
+}
+
+var reconcileRemoveMirror = os.RemoveAll
+var reconcileListEntries = ListGrubEntries
+
 // SyncBackupsAndGrub reconciles optional EFI mirrors used by GRUB entries:
 // - keeps EFI mirrors only for activated snapshots
 // - refreshes active EFI mirrors from snapshot source
@@ -754,14 +844,14 @@ func syncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	entries, err := ListGrubEntries()
+	entries, err := reconcileListEntries()
 	if err != nil {
 		return nil, nil, err
 	}
-	activeByName := map[string]struct{}{}
+	activeByName := map[string][]GrubEntry{}
 	for _, e := range entries {
 		if e.Name != "" {
-			activeByName[e.Name] = struct{}{}
+			activeByName[e.Name] = append(activeByName[e.Name], e)
 		}
 	}
 	needsEFIMount := len(activeByName) > 0
@@ -779,14 +869,18 @@ func syncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 		}
 	}
 	preserveGrubForName := map[string]struct{}{}
+	var issues []ReconcileIssue
+	var completed []ReconcileAction
 	for i := range backups {
 		b := &backups[i]
 		if !b.HasSnapshot && b.HasEFI {
-			if rmErr := os.RemoveAll(b.EFIPath); rmErr != nil {
+			if rmErr := reconcileRemoveMirror(b.EFIPath); rmErr != nil {
+				issues = append(issues, ReconcileIssue{Snapshot: b.Name, Operation: "remove orphan mirror", Cause: rmErr})
 				refreshBackupCompleteness(b)
 				b.InSync = false
 				continue
 			}
+			completed = append(completed, ReconcileAction{Snapshot: b.Name, Operation: "remove orphan mirror"})
 			refreshBackupCompleteness(b)
 			continue
 		}
@@ -794,26 +888,100 @@ func syncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 			b.InSync = false
 			continue
 		}
-		_, isActivated := activeByName[b.Name]
+		activeEntries, isActivated := activeByName[b.Name]
 		if !isActivated && b.HasEFI {
-			if err := os.RemoveAll(b.EFIPath); err != nil {
+			if err := reconcileRemoveMirror(b.EFIPath); err != nil {
+				issues = append(issues, ReconcileIssue{Snapshot: b.Name, Operation: "remove inactive mirror", Cause: err})
 				refreshBackupCompleteness(b)
 				b.InSync = false
 				continue
 			} else {
 				b.HasEFI = false
 			}
+			completed = append(completed, ReconcileAction{Snapshot: b.Name, Operation: "remove inactive mirror"})
 			refreshBackupCompleteness(b)
 			continue
 		}
 		wasBootable := IsBootReady(*b)
 		if isActivated {
+			pairChanged := false
+			oldPairPlausible := true
+			oldPairRestoreFailed := false
+			oldEntryArtifactsPresent := b.HasEFI
+			for _, entry := range activeEntries {
+				artifacts, known, readErr := readEntryBootArtifacts(entry)
+				if readErr != nil {
+					return nil, nil, readErr
+				}
+				if !known {
+					return nil, nil, fmt.Errorf("%w: cannot identify boot artifacts for recovery entry %q", ErrBackupIncomplete, entry.ID)
+				}
+				oldEntryArtifactsPresent = oldEntryArtifactsPresent && mirrorHasEntryArtifacts(*b, artifacts)
+				if !entryUsesSelectedArtifacts(*b, artifacts) {
+					pairChanged = true
+					if !b.RootModulesKnown {
+						continue
+					}
+					if !mirrorHasEntryArtifacts(*b, artifacts) {
+						oldPairPlausible = false
+						continue
+					}
+					available, moduleErr := ensureEntryKernelModulesAvailable(*b, artifacts)
+					if moduleErr != nil {
+						issues = append(issues, ReconcileIssue{Snapshot: b.Name, Operation: "restore existing entry modules", Cause: moduleErr})
+						oldPairRestoreFailed = true
+						continue
+					}
+					oldPairPlausible = oldPairPlausible && available
+				}
+				if oldPairRestoreFailed {
+					if oldEntryArtifactsPresent {
+						preserveGrubForName[b.Name] = struct{}{}
+					}
+					b.InSync = false
+					continue
+				}
+			}
+			if !b.RootModulesKnown {
+				// An older recovery may still boot, but neither a stale archive
+				// name nor the running kernel proves its module identity. Keep
+				// the existing entry and mirror without publishing new files.
+				if oldEntryArtifactsPresent {
+					preserveGrubForName[b.Name] = struct{}{}
+				}
+				b.InSync = false
+				continue
+			}
+			if pairChanged {
+				if b.HasEFI && oldPairPlausible {
+					preserveGrubForName[b.Name] = struct{}{}
+				}
+				b.InSync = false
+				continue
+			}
+			if !snapshotBootArtifactsValid(*b) {
+				if b.HasEFI && mirrorHasPlausibleBootArtifacts(*b) && !hasKnownMissingRootModules(*b) {
+					preserveGrubForName[b.Name] = struct{}{}
+				}
+				b.InSync = false
+				continue
+			}
+			modulesMissing := hasKnownMissingRootModules(*b)
 			if err := ensureRootModulesAvailable(b); err != nil {
+				operation := "verify modules"
+				if b.HasArchivedModules {
+					operation = "restore modules"
+				}
+				issues = append(issues, ReconcileIssue{Snapshot: b.Name, Operation: operation, Cause: err})
 				refreshBackupCompleteness(b)
 				b.InSync = false
 				continue
 			}
+			if modulesMissing {
+				completed = append(completed, ReconcileAction{Snapshot: b.Name, Operation: "restore modules"})
+			}
 			if err := ensureEFIMirrorFromSnapshot(b); err != nil {
+				issues = append(issues, ReconcileIssue{Snapshot: b.Name, Operation: "sync mirror", Cause: err})
 				if wasBootable {
 					preserveGrubForName[b.Name] = struct{}{}
 				}
@@ -821,11 +989,20 @@ func syncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 				b.InSync = false
 				continue
 			}
+			completed = append(completed, ReconcileAction{Snapshot: b.Name, Operation: "sync mirror"})
 		}
-		refreshBackupCompleteness(b)
 	}
 	if err := removeStaleGrubEntries(backups, preserveGrubForName); err != nil {
-		return nil, nil, err
+		currentEntries, listErr := reconcileListEntries()
+		if listErr == nil {
+			if currentEntries == nil {
+				currentEntries = []GrubEntry{}
+			}
+			markGrubFlags(backups, currentEntries)
+		}
+		finalErr := errors.Join(fmt.Errorf("remove stale bootloader entries: %w", err), listErr)
+		partial := reconcilePartialResult(issues, completed, backups, activeByName, false, finalErr)
+		return backups, currentEntries, partial
 	}
 	cleanupErr := cleanupRestoredModuleTrees()
 	// Cleanup can remove modules for inactive archived snapshots. Refresh only
@@ -834,18 +1011,28 @@ func syncBackupsAndGrub() ([]BootBackup, []GrubEntry, error) {
 		b := &backups[i]
 		b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(b.KernelVersion)
 	}
-	entries, err = ListGrubEntries()
+	entries, err = reconcileListEntries()
 	if err != nil {
-		return nil, nil, err
+		partial := reconcilePartialResult(issues, completed, backups, activeByName, false, fmt.Errorf("list final bootloader entries: %w", err))
+		var resultErrs []error
+		resultErrs = append(resultErrs, partial)
+		if cleanupErr != nil {
+			resultErrs = append(resultErrs, &ReconcileCleanupWarning{Cause: cleanupErr})
+		}
+		return backups, nil, errors.Join(resultErrs...)
 	}
 	if entries == nil {
 		entries = []GrubEntry{}
 	}
 	markGrubFlags(backups, entries)
-	if cleanupErr != nil {
-		return backups, entries, &ReconcileCleanupWarning{Cause: cleanupErr}
+	var resultErrs []error
+	if partial := reconcilePartialResult(issues, completed, backups, activeByName, true, nil); partial != nil {
+		resultErrs = append(resultErrs, partial)
 	}
-	return backups, entries, nil
+	if cleanupErr != nil {
+		resultErrs = append(resultErrs, &ReconcileCleanupWarning{Cause: cleanupErr})
+	}
+	return backups, entries, errors.Join(resultErrs...)
 }
 
 // DiscoverBackups returns one row per snapshot name without mutating state.
@@ -925,9 +1112,9 @@ func buildBackupFromPaths(name, snapshotPath, efiPath string) BootBackup {
 }
 
 func validateBootSourceForSnapshot() error {
-	kernel, initramfs := findKernelAndInitramfs(BootDir)
-	if kernel == "" || initramfs == "" {
-		return fmt.Errorf("%w: %s is missing a required kernel/initramfs pair", ErrBackupIncomplete, BootDir)
+	kernel, initramfs, err := selectKernelAndInitramfs(BootDir)
+	if err != nil {
+		return err
 	}
 	for _, name := range append(findMicrocodeImages(BootDir), kernel, initramfs) {
 		path := filepath.Join(BootDir, name)
@@ -955,17 +1142,16 @@ func refreshBackupCompleteness(b *BootBackup) {
 	b.KernelImage, b.InitramfsImage = findKernelAndInitramfs(b.MetadataPath)
 	b.MicrocodeImages = findMicrocodeImages(b.MetadataPath)
 	b.KernelVersion = detectKernelVersion(b.MetadataPath, b.KernelImage, b.InitramfsImage)
-	if b.KernelVersion == "unknown" {
-		if archivedVersion := detectArchivedKernelVersion(b.SnapshotPath); archivedVersion != "" {
-			b.KernelVersion = archivedVersion
-		}
-	}
 	b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(b.KernelVersion)
 	b.ArchivedModuleTree, b.HasArchivedModules = detectArchivedModuleTree(b.SnapshotPath, b.KernelVersion)
 	b.CreatedAt = detectBackupTime(b.Name, b.SnapshotPath, b.EFIPath)
 	b.SizeBytes = dirSizeBytes(b.MetadataPath)
 	b.HasKernel = b.KernelImage != ""
 	b.HasInitramfs = b.InitramfsImage != ""
+	if b.HasSnapshot {
+		b.HasKernel = b.HasKernel && regularNonEmptyBootArtifact(filepath.Join(b.SnapshotPath, b.KernelImage))
+		b.HasInitramfs = b.HasInitramfs && regularNonEmptyBootArtifact(filepath.Join(b.SnapshotPath, b.InitramfsImage))
+	}
 	if b.HasSnapshot && b.HasEFI {
 		b.InSync = efiMirrorHasBootArtifacts(*b)
 	}
@@ -989,34 +1175,16 @@ func detectArchivedModuleTree(snapshotPath, kernelVersion string) (string, bool)
 	return path, fileExists(path)
 }
 
-func detectArchivedKernelVersion(snapshotPath string) string {
-	root := filepath.Join(snapshotPath, moduleArchiveRoot)
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return ""
-	}
-	var versions []string
-	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".sqfs") {
-			versions = append(versions, strings.TrimSuffix(entry.Name(), ".sqfs"))
-		}
-	}
-	if len(versions) != 1 {
-		return ""
-	}
-	return versions[0]
-}
-
 func archivedModuleImagePath(snapshotPath, kernelVersion string) string {
 	return filepath.Join(snapshotPath, moduleArchiveRoot, kernelVersion+".sqfs")
 }
 
 func IsBootReady(b BootBackup) bool {
-	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && b.InSync && !hasKnownMissingRootModules(b)
+	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && snapshotMicrocodeValid(b) && b.InSync && b.RootModulesKnown && b.HasRootModules
 }
 
 func IsRestoreReady(b BootBackup) bool {
-	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && b.InSync && hasKnownMissingRootModules(b) && b.HasArchivedModules
+	return b.HasSnapshot && b.HasEFI && b.HasKernel && b.HasInitramfs && snapshotMicrocodeValid(b) && b.InSync && hasKnownMissingRootModules(b) && b.HasArchivedModules
 }
 
 func hasKnownMissingRootModules(b BootBackup) bool {
@@ -1077,12 +1245,6 @@ func ensureRootModulesAvailable(b *BootBackup) error {
 }
 
 func archiveRootModulesForSnapshot(b *BootBackup) error {
-	if b.HasSnapshot && !b.RootModulesKnown {
-		if version := currentRunningKernelVersion(); version != "" {
-			b.KernelVersion = version
-			b.RootModuleTree, b.RootModulesKnown, b.HasRootModules = detectRootModuleTree(version)
-		}
-	}
 	if !b.HasSnapshot || !b.RootModulesKnown || !b.HasRootModules {
 		return nil
 	}
@@ -1183,17 +1345,12 @@ func chownTreeToRoot(root string) error {
 	})
 }
 
-func currentRunningKernelVersion() string {
-	out, err := exec.Command("uname", "-r").CombinedOutput()
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(string(out))
-}
-
 func ensureEFIMirrorFromSnapshot(b *BootBackup) error {
 	if !b.HasSnapshot {
 		return fmt.Errorf("%w: %q", ErrBackupNotFound, b.Name)
+	}
+	if !snapshotBootArtifactsValid(*b) {
+		return fmt.Errorf("%w: snapshot %q has invalid boot artifacts", ErrBackupIncomplete, b.Name)
 	}
 	if err := ensureEFIMountAvailable(); err != nil {
 		return err
@@ -1202,7 +1359,7 @@ func ensureEFIMirrorFromSnapshot(b *BootBackup) error {
 	if err := os.MkdirAll(b.EFIPath, 0o755); err != nil {
 		return err
 	}
-	if err := syncDirContentsWithExcludes(b.SnapshotPath, b.EFIPath, []string{bootrecovMetadataRoot + "/**"}); err != nil {
+	if err := syncDirContentsWithFiltersMode(b.SnapshotPath, b.EFIPath, []string{bootrecovMetadataRoot + "/**"}, nil, true); err != nil {
 		if !hadEFI {
 			_ = os.RemoveAll(b.EFIPath)
 		}
@@ -1214,7 +1371,7 @@ func ensureEFIMirrorFromSnapshot(b *BootBackup) error {
 		if !hadEFI {
 			_ = os.RemoveAll(b.EFIPath)
 		}
-		return fmt.Errorf("%w: EFI mirror for %q is missing required boot artifacts after sync", ErrBackupIncomplete, b.Name)
+		return fmt.Errorf("%w: EFI mirror for %q does not match snapshot boot artifacts after sync", ErrBackupIncomplete, b.Name)
 	}
 	return nil
 }
@@ -1232,15 +1389,6 @@ func dirExists(path string) bool {
 	return st.IsDir()
 }
 
-func firstExistingFile(base string, candidates []string) string {
-	for _, name := range candidates {
-		if fileExists(filepath.Join(base, name)) {
-			return name
-		}
-	}
-	return ""
-}
-
 func chooseMetadataPath(b *BootBackup) string {
 	if b.HasSnapshot {
 		return b.SnapshotPath
@@ -1252,15 +1400,32 @@ func chooseMetadataPath(b *BootBackup) string {
 }
 
 func findKernelAndInitramfs(base string) (string, string) {
+	if kernel, initramfs, err := selectKernelAndInitramfs(base); err == nil {
+		return kernel, initramfs
+	}
+	// An incomplete snapshot still needs its kernel identity for module
+	// retention. Do not turn an unrelated initramfs into a boot pair.
+	for _, name := range []string{"vmlinuz-linux", "vmlinuz"} {
+		if fileExists(filepath.Join(base, name)) {
+			return name, ""
+		}
+	}
+	if kernels := globBaseNames(base, "vmlinuz-*"); len(kernels) > 0 {
+		return kernels[0], ""
+	}
+	return "", ""
+}
+
+func selectKernelAndInitramfs(base string) (string, string, error) {
 	if base == "" {
-		return "", ""
+		return "", "", fmt.Errorf("%w: no boot artifact directory", ErrBackupIncomplete)
 	}
 	for _, pair := range [][2]string{
 		{"vmlinuz-linux", "initramfs-linux.img"},
 		{"vmlinuz", "initrd.img"},
 	} {
 		if fileExists(filepath.Join(base, pair[0])) && fileExists(filepath.Join(base, pair[1])) {
-			return pair[0], pair[1]
+			return pair[0], pair[1], nil
 		}
 	}
 
@@ -1268,26 +1433,26 @@ func findKernelAndInitramfs(base string) (string, string) {
 	initramfs := append(globBaseNames(base, "initrd.img-*"), globBaseNames(base, "initramfs-*.img")...)
 	sort.Strings(initramfs)
 	for _, kernel := range kernels {
-		kernelVersion := parseKernelVersionFromName(kernel)
-		if kernelVersion == "" {
-			continue
-		}
-		for _, initrd := range initramfs {
-			if parseKernelVersionFromName(initrd) == kernelVersion {
-				return kernel, initrd
+		suffix := strings.TrimPrefix(kernel, "vmlinuz-")
+		for _, candidate := range []string{
+			"initrd.img-" + suffix,
+			"initramfs-" + suffix + ".img",
+			"initramfs-" + suffix + "-fallback.img",
+		} {
+			if fileExists(filepath.Join(base, candidate)) {
+				return kernel, candidate, nil
 			}
 		}
 	}
-
-	kernel := firstExistingFile(base, []string{"vmlinuz-linux", "vmlinuz"})
-	if kernel == "" && len(kernels) > 0 {
-		kernel = kernels[0]
+	availableKernels := append([]string{}, kernels...)
+	if fileExists(filepath.Join(base, "vmlinuz")) {
+		availableKernels = append(availableKernels, "vmlinuz")
 	}
-	initrd := firstExistingFile(base, []string{"initramfs-linux.img", "initrd.img"})
-	if initrd == "" && len(initramfs) > 0 {
-		initrd = initramfs[0]
+	if fileExists(filepath.Join(base, "initrd.img")) {
+		initramfs = append(initramfs, "initrd.img")
 	}
-	return kernel, initrd
+	return "", "", fmt.Errorf("%w: %s has no matching kernel/initramfs pair (kernels: %s; initramfs: %s)",
+		ErrBackupIncomplete, base, strings.Join(availableKernels, ", "), strings.Join(initramfs, ", "))
 }
 
 func globBaseNames(base, pattern string) []string {
@@ -1305,11 +1470,123 @@ func efiMirrorHasBootArtifacts(b BootBackup) bool {
 		return false
 	}
 	for _, name := range append(append([]string{}, b.MicrocodeImages...), b.KernelImage, b.InitramfsImage) {
-		if !fileExists(filepath.Join(b.EFIPath, name)) {
+		if !sameBootArtifact(filepath.Join(b.SnapshotPath, name), filepath.Join(b.EFIPath, name)) {
 			return false
 		}
 	}
 	return true
+}
+
+func regularNonEmptyBootArtifact(path string) bool {
+	st, err := os.Lstat(path)
+	return err == nil && st.Mode().IsRegular() && st.Size() > 0
+}
+
+func snapshotMicrocodeValid(b BootBackup) bool {
+	for _, name := range b.MicrocodeImages {
+		if !regularNonEmptyBootArtifact(filepath.Join(b.SnapshotPath, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func snapshotBootArtifactsValid(b BootBackup) bool {
+	return b.HasSnapshot && b.HasKernel && b.HasInitramfs &&
+		regularNonEmptyBootArtifact(filepath.Join(b.SnapshotPath, b.KernelImage)) &&
+		regularNonEmptyBootArtifact(filepath.Join(b.SnapshotPath, b.InitramfsImage)) &&
+		snapshotMicrocodeValid(b)
+}
+
+func mirrorHasPlausibleBootArtifacts(b BootBackup) bool {
+	if b.KernelImage == "" || b.InitramfsImage == "" ||
+		!regularNonEmptyBootArtifact(filepath.Join(b.EFIPath, b.KernelImage)) ||
+		!regularNonEmptyBootArtifact(filepath.Join(b.EFIPath, b.InitramfsImage)) {
+		return false
+	}
+	for _, name := range b.MicrocodeImages {
+		if !regularNonEmptyBootArtifact(filepath.Join(b.EFIPath, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func entryUsesSelectedArtifacts(b BootBackup, entry entryBootArtifacts) bool {
+	if entry.kernel != b.KernelImage || len(entry.initrds) != len(b.MicrocodeImages)+1 {
+		return false
+	}
+	for i, microcode := range b.MicrocodeImages {
+		if entry.initrds[i] != microcode {
+			return false
+		}
+	}
+	return entry.initrds[len(entry.initrds)-1] == b.InitramfsImage
+}
+
+func mirrorHasEntryArtifacts(b BootBackup, entry entryBootArtifacts) bool {
+	for _, name := range append(append([]string{}, entry.initrds...), entry.kernel) {
+		if !regularNonEmptyBootArtifact(filepath.Join(b.EFIPath, name)) {
+			return false
+		}
+	}
+	return true
+}
+
+func ensureEntryKernelModulesAvailable(b BootBackup, entry entryBootArtifacts) (bool, error) {
+	version := detectKernelVersion(b.EFIPath, entry.kernel, entry.initrds[len(entry.initrds)-1])
+	modulePath, known, exists := detectRootModuleTree(version)
+	if !known || exists {
+		return true, nil
+	}
+	archivePath, archived := detectArchivedModuleTree(b.SnapshotPath, version)
+	if !archived {
+		return false, nil
+	}
+	if err := restoreModuleTreeFunc(archivePath, modulePath); err != nil {
+		return false, fmt.Errorf("%w: restore modules for existing recovery kernel %s: %w", ErrRootModuleRestoreFailed, version, err)
+	}
+	_, _, exists = detectRootModuleTree(version)
+	if !exists {
+		return false, fmt.Errorf("%w: restored module tree is missing after restore: %s", ErrRootModuleRestoreFailed, modulePath)
+	}
+	return true, nil
+}
+
+func sameBootArtifact(snapshotPath, mirrorPath string) bool {
+	snapshotInfo, err := os.Lstat(snapshotPath)
+	if err != nil || !snapshotInfo.Mode().IsRegular() || snapshotInfo.Size() == 0 {
+		return false
+	}
+	mirrorInfo, err := os.Lstat(mirrorPath)
+	if err != nil || !mirrorInfo.Mode().IsRegular() || mirrorInfo.Size() != snapshotInfo.Size() {
+		return false
+	}
+	snapshotDigest, err := bootArtifactDigest(snapshotPath, snapshotInfo.Size())
+	if err != nil {
+		return false
+	}
+	mirrorDigest, err := bootArtifactDigest(mirrorPath, mirrorInfo.Size())
+	return err == nil && snapshotDigest == mirrorDigest
+}
+
+func bootArtifactDigest(path string, expectedSize int64) ([sha256.Size]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	defer f.Close()
+	hash := sha256.New()
+	read, err := io.Copy(hash, f)
+	if err != nil {
+		return [sha256.Size]byte{}, err
+	}
+	if read != expectedSize {
+		return [sha256.Size]byte{}, io.ErrUnexpectedEOF
+	}
+	var digest [sha256.Size]byte
+	copy(digest[:], hash.Sum(nil))
+	return digest, nil
 }
 
 func findMicrocodeImages(base string) []string {
@@ -1319,7 +1596,7 @@ func findMicrocodeImages(base string) []string {
 	candidates := []string{"intel-ucode.img", "amd-ucode.img"}
 	var out []string
 	for _, c := range candidates {
-		if fileExists(filepath.Join(base, c)) {
+		if _, err := os.Lstat(filepath.Join(base, c)); err == nil {
 			out = append(out, c)
 		}
 	}
@@ -1331,19 +1608,29 @@ func detectKernelVersion(basePath, kernelImage, initramfsImage string) string {
 		return ""
 	}
 
-	// Prefer explicit version from file names.
+	// Matching artifact names provide a version when image inspection cannot.
+	// A version read from the image must not contradict the artifact names.
+	nameVersion := ""
 	for _, s := range []string{kernelImage, initramfsImage} {
 		if v := parseKernelVersionFromName(s); v != "" {
-			return v
+			if nameVersion != "" && nameVersion != v {
+				return "unknown"
+			}
+			nameVersion = v
 		}
 	}
 
-	// Fallback: ask `file` for kernel version when available.
 	if kernelImage != "" && basePath != "" {
 		abs := filepath.Join(basePath, kernelImage)
 		if v := parseKernelVersionFromFileCmd(abs); v != "" {
+			if nameVersion != "" && nameVersion != v {
+				return "unknown"
+			}
 			return v
 		}
+	}
+	if nameVersion != "" {
+		return nameVersion
 	}
 	return "unknown"
 }
@@ -1381,6 +1668,9 @@ func parseKernelVersionFromFileCmd(kernelPath string) string {
 	}
 	// Typical fragment: "version 6.8.0-31-generic (...)"
 	s := string(out)
+	if !strings.Contains(strings.ToLower(s), "linux kernel") {
+		return ""
+	}
 	idx := strings.Index(s, " version ")
 	if idx == -1 {
 		return ""
@@ -1390,11 +1680,11 @@ func parseKernelVersionFromFileCmd(kernelPath string) string {
 	if end == -1 {
 		end = len(rest)
 	}
-	v := strings.TrimSpace(rest[:end])
-	if v == "" {
+	fields := strings.Fields(rest[:end])
+	if len(fields) == 0 || !kernelImageVersionPattern.MatchString(fields[0]) {
 		return ""
 	}
-	return v
+	return fields[0]
 }
 
 func detectBackupTime(name string, paths ...string) time.Time {
@@ -1748,8 +2038,33 @@ func activateBackup(name string) error {
 	if !canonical.HasSnapshot {
 		return fmt.Errorf("%w: %q", ErrBackupNotFound, name)
 	}
-	if !canonical.HasKernel || !canonical.HasInitramfs {
+	if _, _, err := selectKernelAndInitramfs(canonical.SnapshotPath); err != nil {
+		return err
+	}
+	if !canonical.HasKernel || !canonical.HasInitramfs || !snapshotMicrocodeValid(canonical) {
 		return fmt.Errorf("%w: snapshot %q is incomplete", ErrBackupIncomplete, name)
+	}
+	if !canonical.RootModulesKnown {
+		return fmt.Errorf("%w: kernel version for snapshot %q cannot be verified from its image; activation requires a known module version", ErrBackupIncomplete, name)
+	}
+	entries, err := ListGrubEntries()
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.ID != backupIDForName(name) {
+			continue
+		}
+		artifacts, known, err := readEntryBootArtifacts(entry)
+		if err != nil {
+			return err
+		}
+		if !known {
+			return fmt.Errorf("%w: cannot identify boot artifacts for recovery entry %q", ErrBackupIncomplete, entry.ID)
+		}
+		if !entryUsesSelectedArtifacts(canonical, artifacts) {
+			return fmt.Errorf("%w: recovery %q now selects different boot artifacts; deactivate it before activating the new selection", ErrBackupIncomplete, name)
+		}
 	}
 	if err := ensureEFIMountAvailable(); err != nil {
 		return err
@@ -1762,7 +2077,7 @@ func activateBackup(name string) error {
 	if err := ensureRootModulesAvailable(&canonical); err != nil {
 		return err
 	}
-	if !canonical.HasEFI {
+	if !canonical.HasEFI || !canonical.InSync {
 		if err := ensureEFIMirrorFromSnapshot(&canonical); err != nil {
 			return err
 		}
@@ -1810,6 +2125,10 @@ func syncDirContentsWithExcludes(src, dst string, excludes []string) error {
 }
 
 func syncDirContentsWithFilters(src, dst string, excludes, includes []string) error {
+	return syncDirContentsWithFiltersMode(src, dst, excludes, includes, false)
+}
+
+func syncDirContentsWithFiltersMode(src, dst string, excludes, includes []string, checksum bool) error {
 	src = filepath.Clean(src)
 	dst = filepath.Clean(dst)
 	if src == dst {
@@ -1834,13 +2153,20 @@ func syncDirContentsWithFilters(src, dst string, excludes, includes []string) er
 		}
 		return fallbackSyncCopy(src, dst, normalizeFallbackExcludes(src, excludes))
 	}
-	return runRcloneSync(src, dst, excludes, includes)
+	return runRcloneSyncMode(src, dst, excludes, includes, checksum)
 }
 
 func runRcloneSync(src, dst string, excludes, includes []string) error {
+	return runRcloneSyncMode(src, dst, excludes, includes, false)
+}
+
+func runRcloneSyncMode(src, dst string, excludes, includes []string, checksum bool) error {
 	srcArg := src + string(os.PathSeparator)
 	dstArg := dst + string(os.PathSeparator)
 	args := buildRcloneSyncArgs(srcArg, dstArg, excludes, includes, detectSupportedRcloneSyncFlags())
+	if checksum {
+		args = append(args, "--checksum")
+	}
 	cmd := exec.Command(RcloneBin, args...)
 	out, err := runCommandCombinedOutput(cmd)
 	if err != nil {

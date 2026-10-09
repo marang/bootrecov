@@ -98,7 +98,7 @@ func parseBLSEntryFile(id, path string) (GrubEntry, bool) {
 	if id == "" || !strings.HasPrefix(id, "bootrecov-") {
 		return GrubEntry{}, false
 	}
-	return GrubEntry{ID: id, BackupPath: backupPath, Name: filepath.Base(backupPath)}, true
+	return GrubEntry{ID: id, BackupPath: backupPath, Name: filepath.Base(backupPath), isBLS: true}, true
 }
 
 func parseSimpleKeyValues(data string) map[string]string {

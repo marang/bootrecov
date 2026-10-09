@@ -96,10 +96,25 @@ func newReconcileCmd() *cobra.Command {
 		Short: "Reconcile EFI mirrors and bootloader recovery entries",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			backups, entries, err := syncBackupsAndGrub()
+			var partial *tui.ReconcilePartialError
+			if errors.As(err, &partial) {
+				if partial.StateVerified {
+					fmt.Fprintf(cmd.OutOrStdout(), "processed %d backups and %d bootloader entries with %d snapshot issue(s) and %d completed operation(s)\n", len(backups), len(entries), len(partial.Issues), len(partial.Completed))
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "processed %d backups with %d snapshot issue(s) and %d completed operation(s); final bootloader entry state unverified\n", len(backups), len(partial.Issues), len(partial.Completed))
+				}
+				for _, action := range partial.Completed {
+					fmt.Fprintf(cmd.OutOrStdout(), "completed: %s: %s\n", action.Snapshot, action.Operation)
+				}
+				if partial.FinalizationError != nil {
+					fmt.Fprintf(cmd.OutOrStdout(), "finalization failed: %v\n", partial.FinalizationError)
+				}
+				return err
+			}
 			if err != nil {
 				return err
 			}
-			fmt.Printf("reconciled %d backups and %d bootloader entries\n", len(backups), len(entries))
+			fmt.Fprintf(cmd.OutOrStdout(), "reconciled %d backups and %d bootloader entries\n", len(backups), len(entries))
 			return nil
 		},
 	}
@@ -323,11 +338,39 @@ func newHookCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			backups, entries, err := syncBackupsAndGrub()
 			var warning *tui.ReconcileCleanupWarning
-			if err != nil && !errors.As(err, &warning) {
+			var partial *tui.ReconcilePartialError
+			errors.As(err, &warning)
+			errors.As(err, &partial)
+			if err != nil && warning == nil && partial == nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: active fallback reconcile failed after package transaction: %v\n", err)
 				return nil
 			}
-			fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov: reconciled %d backups and %d bootloader entries after package transaction\n", len(backups), len(entries))
+			if partial != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: active fallback reconcile incomplete after package transaction: %d snapshot issue(s), %d completed operation(s)\n", len(partial.Issues), len(partial.Completed))
+				for _, action := range partial.Completed {
+					fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov: completed %s for snapshot %s\n", action.Operation, action.Snapshot)
+				}
+				for _, issue := range partial.Issues {
+					fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: snapshot %s %s failed: %v\n", issue.Snapshot, issue.Operation, issue.Cause)
+					if issue.StateUnknown {
+						fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: recovery readiness and entry state unverified for snapshot %s\n", issue.Snapshot)
+					} else if issue.WasActive && !issue.EntryRetained {
+						fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: recovery entry lost for snapshot %s; fallback boot is unavailable\n", issue.Snapshot)
+					} else if issue.WasActive && !issue.BootReady {
+						fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: recovery readiness unverified for snapshot %s; its entry remains present\n", issue.Snapshot)
+					}
+				}
+				if partial.FinalizationError != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: final bootloader state could not be verified after package transaction: %v\n", partial.FinalizationError)
+				}
+				if partial.StateVerified {
+					fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov: processed %d backups and %d bootloader entries after package transaction\n", len(backups), len(entries))
+				} else {
+					fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: processed %d backups; final bootloader entry state unverified after package transaction\n", len(backups))
+				}
+			} else {
+				fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov: reconciled %d backups and %d bootloader entries after package transaction\n", len(backups), len(entries))
+			}
 			if warning != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "bootrecov warning: restored module cleanup incomplete after package transaction: %v\n", warning.Cause)
 			}

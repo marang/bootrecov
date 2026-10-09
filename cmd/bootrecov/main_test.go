@@ -371,3 +371,120 @@ func TestHookReconcileActiveReportsCompletedCleanupWarning(t *testing.T) {
 		t.Fatalf("hook misreported completed reconcile: %q", got)
 	}
 }
+
+func TestManualReconcileReturnsPartialFailureWithCompletedCount(t *testing.T) {
+	want := errors.New("injected mirror sync failure")
+	partial := &tui.ReconcilePartialError{
+		Issues:        []tui.ReconcileIssue{{Snapshot: "active", Operation: "sync mirror", Cause: want, WasActive: true, EntryRetained: true, MirrorPresent: true}},
+		Completed:     []tui.ReconcileAction{{Snapshot: "obsolete", Operation: "remove inactive mirror"}},
+		StateVerified: true,
+	}
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return []tui.BootBackup{{Name: "active"}, {Name: "obsolete"}}, []tui.GrubEntry{{Name: "active"}}, partial
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+	var output bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"reconcile"})
+	err := cmd.Execute()
+	if !errors.Is(err, want) {
+		t.Fatalf("manual reconcile did not fail for partial result: %v", err)
+	}
+	if !strings.Contains(output.String(), "processed 2 backups and 1 bootloader entries") || !strings.Contains(output.String(), "completed: obsolete: remove inactive mirror") {
+		t.Fatalf("successful work was not reported separately: %q", output.String())
+	}
+}
+
+func TestHookReconcileActiveWarnsWhenRecoveryEntryIsLost(t *testing.T) {
+	want := errors.New("injected module restore failure")
+	partial := &tui.ReconcilePartialError{Issues: []tui.ReconcileIssue{{Snapshot: "active", Operation: "restore modules", Cause: want, WasActive: true, MirrorPresent: true}}, StateVerified: true}
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return []tui.BootBackup{{Name: "active"}}, []tui.GrubEntry{}, partial
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+	var output bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"hook", "reconcile-active"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("post-transaction hook must warn without failing the completed transaction: %v", err)
+	}
+	got := output.String()
+	for _, phrase := range []string{"active", "restore modules", "injected module restore failure", "recovery entry lost"} {
+		if !strings.Contains(got, phrase) {
+			t.Fatalf("post-transaction warning omitted %q: %q", phrase, got)
+		}
+	}
+}
+
+func TestHookReconcileActiveSeparatesPartialAndCleanupWarnings(t *testing.T) {
+	partial := &tui.ReconcilePartialError{Issues: []tui.ReconcileIssue{{Snapshot: "active", Operation: "sync mirror", Cause: errors.New("sync unavailable"), WasActive: true, EntryRetained: true, MirrorPresent: true}}, StateVerified: true}
+	cleanup := &tui.ReconcileCleanupWarning{Cause: errors.New("package database unavailable")}
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return []tui.BootBackup{{Name: "active"}}, []tui.GrubEntry{{Name: "active"}}, errors.Join(partial, cleanup)
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+	var output bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"hook", "reconcile-active"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("post-transaction hook failed: %v", err)
+	}
+	got := output.String()
+	for _, phrase := range []string{"snapshot active sync mirror failed: sync unavailable", "recovery readiness unverified", "restored module cleanup incomplete after package transaction: package database unavailable"} {
+		if !strings.Contains(got, phrase) {
+			t.Fatalf("combined warnings omitted %q: %q", phrase, got)
+		}
+	}
+}
+
+func TestHookReconcileActiveDoesNotClaimLostEntryForInactiveMirror(t *testing.T) {
+	partial := &tui.ReconcilePartialError{Issues: []tui.ReconcileIssue{{Snapshot: "inactive", Operation: "remove inactive mirror", Cause: errors.New("removal denied"), MirrorPresent: true}}, StateVerified: true}
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return []tui.BootBackup{{Name: "inactive"}}, []tui.GrubEntry{}, partial
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+	var output bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetErr(&output)
+	cmd.SetArgs([]string{"hook", "reconcile-active"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "snapshot inactive remove inactive mirror failed: removal denied") || strings.Contains(got, "recovery entry lost") {
+		t.Fatalf("inactive mirror failure was misreported: %q", got)
+	}
+}
+
+func TestManualReconcileDoesNotClaimFinalEntryCountAfterListingFailure(t *testing.T) {
+	want := errors.New("entry listing unavailable")
+	partial := &tui.ReconcilePartialError{Completed: []tui.ReconcileAction{{Snapshot: "obsolete", Operation: "remove inactive mirror"}}, FinalizationError: want}
+	oldSync := syncBackupsAndGrub
+	syncBackupsAndGrub = func() ([]tui.BootBackup, []tui.GrubEntry, error) {
+		return []tui.BootBackup{{Name: "obsolete"}}, nil, partial
+	}
+	t.Cleanup(func() { syncBackupsAndGrub = oldSync })
+	t.Setenv(riskAcceptEnv, "1")
+	var output bytes.Buffer
+	cmd := newRootCmd()
+	cmd.SetOut(&output)
+	cmd.SetArgs([]string{"reconcile"})
+	if err := cmd.Execute(); !errors.Is(err, want) {
+		t.Fatalf("finalization failure was not returned: %v", err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "final bootloader entry state unverified") || strings.Contains(got, "0 bootloader entries") || !strings.Contains(got, "completed: obsolete: remove inactive mirror") {
+		t.Fatalf("manual reconcile overstated final state: %q", got)
+	}
+}

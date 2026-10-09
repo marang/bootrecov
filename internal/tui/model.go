@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"charm.land/bubbles/v2/help"
@@ -440,8 +441,20 @@ func waitTaskOutput(output <-chan string) tea.Cmd {
 
 func taskCmdWithOutput(output chan<- string, fn func() tea.Msg) tea.Cmd {
 	return func() tea.Msg {
-		defer close(output)
+		var outputMu sync.Mutex
+		closed := false
+		defer func() {
+			outputMu.Lock()
+			closed = true
+			close(output)
+			outputMu.Unlock()
+		}()
 		return withCommandOutputSink(func(line string) {
+			outputMu.Lock()
+			defer outputMu.Unlock()
+			if closed {
+				return
+			}
 			select {
 			case output <- line:
 			default:
@@ -638,12 +651,52 @@ func runReconcileTask(output chan<- string) tea.Cmd {
 	return taskCmdWithOutput(output, func() tea.Msg {
 		backups, entries, err := SyncBackupsAndGrub()
 		status := fmt.Sprintf("reconcile complete. active EFI mirrors refreshed and %s cleaned", GrubCustom)
+		var partial *ReconcilePartialError
+		var warning *ReconcileCleanupWarning
+		errors.As(err, &partial)
+		errors.As(err, &warning)
 		if err != nil {
-			var warning *ReconcileCleanupWarning
-			if !errors.As(err, &warning) {
+			if partial == nil && warning == nil {
 				return taskDoneMsg{task: taskReconcile, mode: modeBackups, errStatus: fmt.Sprintf("sync failed: %v", err)}
 			}
-			status += "; restored module cleanup incomplete: " + warning.Cause.Error()
+			if partial != nil {
+				status = fmt.Sprintf("reconcile incomplete: %d snapshot issue(s), %d completed operation(s)", len(partial.Issues), len(partial.Completed))
+				for _, action := range partial.Completed {
+					status += fmt.Sprintf("\ncompleted: %s: %s", action.Snapshot, action.Operation)
+				}
+				for _, issue := range partial.Issues {
+					entry := "no entry"
+					if issue.StateUnknown {
+						entry = "entry state unverified"
+					} else if issue.EntryRetained {
+						entry = "entry retained"
+					} else if issue.WasActive {
+						entry = "entry removed"
+					}
+					readiness := "readiness unverified"
+					if !issue.StateUnknown && issue.WasActive && !issue.EntryRetained {
+						readiness = "fallback unavailable"
+					} else if issue.BootReady {
+						readiness = "boot ready"
+					}
+					status += fmt.Sprintf("\n%s: %s failed (%s, %s)", issue.Snapshot, issue.Operation, entry, readiness)
+					cause := issue.Cause
+					for next := errors.Unwrap(cause); next != nil; next = errors.Unwrap(cause) {
+						cause = next
+					}
+					status += "\ncause: " + cause.Error()
+				}
+				if partial.FinalizationError != nil {
+					status += "\nfinalization failed: " + partial.FinalizationError.Error()
+				}
+			}
+			if warning != nil {
+				if partial != nil {
+					status += "\nmodule cleanup incomplete: " + warning.Cause.Error()
+				} else {
+					status += "; restored module cleanup incomplete: " + warning.Cause.Error()
+				}
+			}
 		}
 		return taskDoneMsg{
 			task:    taskReconcile,
@@ -814,6 +867,18 @@ func statusActivityLine(m Model) string {
 	if strings.TrimSpace(m.status) == "" {
 		return ""
 	}
+	if strings.Contains(m.status, "\n") {
+		lines := strings.Split(m.status, "\n")
+		out := activityLineWithText(m.activityWidth, lines[0], completeActivityBar, statusTextStyle)
+		for _, line := range lines[1:] {
+			style := warnStyle
+			if strings.HasPrefix(line, "completed: ") {
+				style = statusTextStyle
+			}
+			out += "\n" + style.Render(truncateVisible(line, m.activityWidth))
+		}
+		return out
+	}
 	if completed, warning, ok := strings.Cut(m.status, "; restored module cleanup incomplete: "); ok {
 		return activityLineWithText(m.activityWidth, completed, completeActivityBar, statusTextStyle) + "\n" +
 			warnStyle.Render(truncateVisible("module cleanup incomplete: "+warning, m.activityWidth))
@@ -976,12 +1041,18 @@ func statusString(b BootBackup) string {
 	if !b.HasSnapshot {
 		return "Missing"
 	}
-	if b.HasKernel && b.HasInitramfs {
+	if b.HasEFI && !b.InSync {
+		return "Incomplete"
+	}
+	if b.HasKernel && b.HasInitramfs && snapshotMicrocodeValid(b) {
 		if IsRestoreReady(b) {
 			return "Restore"
 		}
 		if hasKnownMissingRootModules(b) {
 			return "No modules"
+		}
+		if !b.RootModulesKnown {
+			return "Unknown kernel"
 		}
 		return "OK"
 	}

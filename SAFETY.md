@@ -15,12 +15,14 @@ Bootrecov is intentionally conservative because it writes to boot-critical locat
 - TUI and CLI invocations require explicit risk acknowledgement via prompt, flag, or environment variable.
 - Activation restores an archived `/usr/lib/modules/<version>` tree when the live tree is missing and the snapshot contains a matching SquashFS archive.
 - Activation and reconcile do not overwrite an existing `/usr/lib/modules/<version>` tree.
+- Activation requires an identifiable kernel version and a matching, readable kernel/initramfs pair; file names alone do not establish that the boot artifacts are usable.
 - On Arch, module cleanup only considers trees marked as restored by Bootrecov, and preserves a running kernel, installed package files, and modules referenced by remaining GRUB or BLS entries, including manual entries. Unmarked legacy trees and restored trees on other distributions remain in place.
 - Cleanup retains modules if a GRUB device or configuration reference cannot be proved from the mounted filesystems; it does not execute GRUB scripts to infer their runtime state.
 - Bootrecov serializes entry, snapshot, and module-tree changes across processes; Arch cleanup is deferred while a package transaction is active.
-- Activation refuses a snapshot when the kernel version is known, `/usr/lib/modules/<version>` is missing, and the snapshot has no matching archived module tree.
+- Activation refuses a snapshot when `/usr/lib/modules/<version>` is missing and the snapshot has no matching archived module tree.
 - Internal `.bootrecov` metadata is excluded from active boot mirrors.
 - Reconcile removes inactive boot mirrors but preserves an already bootable active GRUB entry if refreshing its boot mirror fails transiently.
+- Reconcile reports per-snapshot failures and whether an affected entry was retained; manual CLI reconcile exits nonzero on a partial failure, while package post-transaction reconcile warns without failing the completed transaction.
 - There is no automatic snapshot pruning, so Bootrecov does not delete older snapshots without an explicit delete command.
 
 ## High-Risk Paths

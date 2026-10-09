@@ -76,6 +76,9 @@ func addGrubEntry(b BootBackup) error {
 	if !canonical.HasKernel || !canonical.HasInitramfs {
 		return fmt.Errorf("%w: backup %q is incomplete", ErrBackupIncomplete, canonical.Path)
 	}
+	if !canonical.RootModulesKnown {
+		return fmt.Errorf("%w: kernel version for backup %q cannot be verified from its image", ErrBackupIncomplete, name)
+	}
 	if err := ensureEFIMountAvailable(); err != nil {
 		return err
 	}
@@ -306,6 +309,84 @@ func parseBootrecovMenuentry(line string) (GrubEntry, bool) {
 	}, true
 }
 
+type entryBootArtifacts struct {
+	kernel  string
+	initrds []string
+}
+
+func entryMirrorArtifactName(entry GrubEntry, path string) (string, bool) {
+	name := filepath.Base(path)
+	expected := filepath.ToSlash(filepath.Join(grubVisiblePath(entry.BackupPath), name))
+	return name, path == expected
+}
+
+func readEntryBootArtifacts(entry GrubEntry) (entryBootArtifacts, bool, error) {
+	if entry.isBLS {
+		data, err := os.ReadFile(blsEntryPath(entry.ID))
+		if err != nil {
+			return entryBootArtifacts{}, false, err
+		}
+		var artifacts entryBootArtifacts
+		validPaths := true
+		for _, raw := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(raw)
+			if len(fields) != 2 {
+				continue
+			}
+			switch fields[0] {
+			case "linux":
+				name, valid := entryMirrorArtifactName(entry, fields[1])
+				validPaths = validPaths && valid && artifacts.kernel == ""
+				artifacts.kernel = name
+			case "initrd":
+				name, valid := entryMirrorArtifactName(entry, fields[1])
+				validPaths = validPaths && valid
+				artifacts.initrds = append(artifacts.initrds, name)
+			}
+		}
+		return artifacts, validPaths && artifacts.kernel != "" && len(artifacts.initrds) > 0, nil
+	}
+	data, err := os.ReadFile(GrubCustom)
+	if err != nil {
+		return entryBootArtifacts{}, false, err
+	}
+	var artifacts entryBootArtifacts
+	inEntry := false
+	validPaths := true
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if parsed, ok := parseBootrecovMenuentry(line); ok {
+			inEntry = parsed.ID == entry.ID && parsed.BackupPath == entry.BackupPath
+			continue
+		}
+		if !inEntry {
+			continue
+		}
+		if line == "}" {
+			break
+		}
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		switch fields[0] {
+		case "linux":
+			name, valid := entryMirrorArtifactName(entry, fields[1])
+			validPaths = validPaths && valid && artifacts.kernel == ""
+			artifacts.kernel = name
+		case "initrd":
+			for _, path := range fields[1:] {
+				name, valid := entryMirrorArtifactName(entry, path)
+				validPaths = validPaths && valid
+				artifacts.initrds = append(artifacts.initrds, name)
+			}
+		case "linuxefi", "initrdefi":
+			validPaths = false
+		}
+	}
+	return artifacts, validPaths && artifacts.kernel != "" && len(artifacts.initrds) > 0, nil
+}
+
 func removeStaleGrubEntries(backups []BootBackup, preserveByName map[string]struct{}) error {
 	valid := map[string]string{}
 	for _, b := range backups {
@@ -363,7 +444,7 @@ func RecoveryCommands(name string) (string, error) {
 	if !canonical.HasEFI {
 		return "", fmt.Errorf("%w: snapshot %q is not activated in EFI (press 'g' in TUI to activate)", ErrBackupNotActivated, name)
 	}
-	if !canonical.HasKernel || !canonical.HasInitramfs {
+	if !canonical.HasKernel || !canonical.HasInitramfs || !canonical.InSync || !canonical.RootModulesKnown {
 		return "", fmt.Errorf("%w: snapshot %q is incomplete", ErrBackupIncomplete, name)
 	}
 	if err := validateRootModuleCompatibility(canonical); err != nil {

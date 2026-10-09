@@ -470,6 +470,14 @@ func writeFileWithContent(t *testing.T, path, content string) {
 	}
 }
 
+func makeFixtureKernelVersionDiscoverable(t *testing.T) {
+	t.Helper()
+	bin := t.TempDir()
+	writeExecutable(t, filepath.Join(bin, "file"), "#!/bin/sh\necho 'Linux kernel image, version 6.6.7-fixture, test'\n")
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	writeFile(t, filepath.Join(RootModulesDir, "6.6.7-fixture", "modules.dep"))
+}
+
 func writeExecutable(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -750,12 +758,14 @@ func TestSyncBackupsAndGrubRemovesInactiveEFIMirror(t *testing.T) {
 func TestSyncBackupsAndGrubPreservesActiveGrubEntryWhenRefreshFails(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 
 	makeBootableBackup(t, snap, "active")
 	makeBootableBackup(t, efi, "active")
 
 	entryID := backupID(filepath.Join(efi, "active"))
-	entry := fmt.Sprintf("#!/bin/bash\ncat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n}\nEOF\n", filepath.Join(efi, "active"), entryID)
+	visible := grubVisiblePath(filepath.Join(efi, "active"))
+	entry := fmt.Sprintf("#!/bin/bash\ncat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n    linux %s/vmlinuz rw\n    initrd %s/initrd.img\n}\nEOF\n", filepath.Join(efi, "active"), entryID, visible, visible)
 	if err := os.WriteFile(grub, []byte(entry), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -764,8 +774,9 @@ func TestSyncBackupsAndGrubPreservesActiveGrubEntryWhenRefreshFails(t *testing.T
 	RequireRclone = true
 
 	backups, entries, err := SyncBackupsAndGrub()
-	if err != nil {
-		t.Fatal(err)
+	var partial *ReconcilePartialError
+	if !errors.As(err, &partial) || len(partial.Issues) != 1 || partial.Issues[0].Operation != "sync mirror" {
+		t.Fatalf("mirror refresh failure was not reported: %v", err)
 	}
 	if len(backups) != 1 {
 		t.Fatalf("expected one backup, got %d", len(backups))
@@ -790,7 +801,8 @@ func TestSyncBackupsAndGrubRestoresArchivedModulesForActiveEntry(t *testing.T) {
 	writeFile(t, archivedModuleImagePath(filepath.Join(snap, "active"), version))
 
 	entryID := backupIDForName("active")
-	entry := fmt.Sprintf("#!/bin/bash\ncat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n}\nEOF\n", filepath.Join(efi, "active"), entryID)
+	visible := grubVisiblePath(filepath.Join(efi, "active"))
+	entry := fmt.Sprintf("#!/bin/bash\ncat <<'EOF'\nmenuentry 'Bootrecov %s' --id %s {\n    linux %s/vmlinuz-%s rw\n    initrd %s/initrd.img-%s\n}\nEOF\n", filepath.Join(efi, "active"), entryID, visible, version, visible, version)
 	if err := os.WriteFile(grub, []byte(entry), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -881,6 +893,7 @@ func TestAddGrubEntryRequiresSyncedPair(t *testing.T) {
 func TestAddRemoveGrubEntryForSyncedPair(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 
 	makeBootableBackup(t, snap, "pair")
 	makeBootableBackup(t, efi, "pair")
@@ -1258,6 +1271,7 @@ func TestModelHookKeyTogglesInstallAndUninstall(t *testing.T) {
 func TestModelHelpToggleAndTabViews(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	makeBootableBackup(t, snap, "pair")
 	makeBootableBackup(t, efi, "pair")
 	if err := AddGrubEntry(BootBackup{Name: "pair"}); err != nil {
@@ -1837,6 +1851,7 @@ func TestRecoveryCommandsRequireActivatedBackup(t *testing.T) {
 func TestRecoveryCommandsUseGrubVisiblePaths(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
 	content := fmt.Sprintf("36 25 8:2 / %s rw,relatime - vfat /dev/sda2 rw\n", efi)
 	if err := os.WriteFile(mountInfoPath, []byte(content), 0o644); err != nil {
@@ -1907,6 +1922,7 @@ func TestRejectsPathTraversalBackupNames(t *testing.T) {
 func TestActivateBackupRequiresEFIMountWhenEnabled(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	RequireEFIMount = true
 	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
 	if err := os.WriteFile(mountInfoPath, []byte("24 1 8:1 / / rw,relatime - ext4 /dev/root rw\n"), 0o644); err != nil {
@@ -1923,6 +1939,7 @@ func TestActivateBackupRequiresEFIMountWhenEnabled(t *testing.T) {
 func TestActivateBackupAcceptsMountedEFIRoot(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	RequireEFIMount = true
 	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
 	efiRoot := filepath.Dir(efi)
@@ -2042,6 +2059,7 @@ func TestGrubVisiblePathUsesDeepestMountPoint(t *testing.T) {
 func TestAddGrubEntryUsesGrubVisibleBootPaths(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	mountInfoPath = filepath.Join(t.TempDir(), "mountinfo")
 	content := fmt.Sprintf("36 25 8:2 / %s rw,relatime - vfat /dev/sda2 rw\n", efi)
 	if err := os.WriteFile(mountInfoPath, []byte(content), 0o644); err != nil {
@@ -2080,6 +2098,7 @@ func TestAddGrubEntryUsesGrubVisibleBootPaths(t *testing.T) {
 func TestAddGrubEntryPrefersFedoraBLSWhenUsable(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	activePlatformID = PlatformFedora
 	activePlatformName = "Fedora Linux"
 	activeHookSupported = true
@@ -2127,6 +2146,7 @@ func TestAddGrubEntryPrefersFedoraBLSWhenUsable(t *testing.T) {
 func TestAddGrubEntryClosesCustomFileBeforeGrubMkconfig(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 	makeBootableBackup(t, snap, "pair")
 	makeBootableBackup(t, efi, "pair")
 
@@ -2325,6 +2345,7 @@ func TestAddGrubEntryAllowsMatchingRootModuleTree(t *testing.T) {
 func TestDeleteBackupRemovesBothCopiesAndGrubEntry(t *testing.T) {
 	boot, snap, efi, grub := setupDirs(t)
 	setTestGlobals(t, boot, snap, efi, grub)
+	makeFixtureKernelVersionDiscoverable(t)
 
 	makeBootableBackup(t, snap, "delme")
 	makeBootableBackup(t, efi, "delme")
