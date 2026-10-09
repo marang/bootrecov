@@ -153,7 +153,15 @@ func printPlatformDoctorRows(tw *tabwriter.Writer, info tui.RuntimeEnvironment) 
 		printDoctorRow(tw, "arch", "package-hook-backend", statusOK("supported"), "pacman")
 		printDoctorPathRow(tw, "arch", "pacman-pre-hook", info.Layout.PacmanHookPath, false)
 		printDoctorPathRow(tw, "arch", "pacman-post-hook", info.Layout.PacmanPostHookPath, false)
-		printDoctorRow(tw, "arch", "initramfs-backend", statusOK("supported"), "mkinitcpio")
+		if info.InitramfsMode == "busybox" && info.InitramfsReason == "" {
+			printDoctorRow(tw, "arch", "initramfs-backend", statusOK("supported"), "mkinitcpio BusyBox")
+		} else {
+			detail := "mkinitcpio " + info.InitramfsMode
+			if info.InitramfsReason != "" {
+				detail = info.InitramfsReason
+			}
+			printDoctorRow(tw, "arch", "initramfs-backend", statusWarn("unsupported"), "%s", detail)
+		}
 		printDoctorBinRow(tw, "arch", "mkinitcpio-bin", info.Layout.MkinitcpioBin)
 		printDoctorPathRow(tw, "arch", "mkinitcpio-config", info.Layout.MkinitcpioConfig, true)
 		printDoctorPathRow(tw, "arch", "mkinitcpio-install-hook", info.Layout.MkinitcpioInstallHook, false)

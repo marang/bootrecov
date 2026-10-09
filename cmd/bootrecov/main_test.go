@@ -253,7 +253,8 @@ func renderDoctorPlatformRows(t *testing.T, info tui.RuntimeEnvironment) string 
 
 func TestDoctorPlatformRowsShowOnlyArchHookBackend(t *testing.T) {
 	out := renderDoctorPlatformRows(t, tui.RuntimeEnvironment{
-		PlatformID: tui.PlatformArch,
+		PlatformID:    tui.PlatformArch,
+		InitramfsMode: "busybox",
 		Layout: tui.SystemLayout{
 			PacmanHookPath:        "/etc/pacman.d/hooks/95-bootrecov-pre-transaction.hook",
 			PacmanPostHookPath:    "/etc/pacman.d/hooks/96-bootrecov-post-transaction.hook",
@@ -279,6 +280,19 @@ func TestDoctorPlatformRowsShowOnlyArchHookBackend(t *testing.T) {
 	for _, unwanted := range []string{"dracut-bin", "dnf5-actions-path", "bls-entries-dir"} {
 		if strings.Contains(out, unwanted) {
 			t.Fatalf("Arch doctor rows should not contain %q:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestDoctorPlatformRowsRejectSystemdInitramfs(t *testing.T) {
+	out := renderDoctorPlatformRows(t, tui.RuntimeEnvironment{
+		PlatformID:      tui.PlatformArch,
+		InitramfsMode:   "systemd",
+		InitramfsReason: "systemd initramfs does not run Bootrecov's BusyBox runtime hook",
+	})
+	for _, want := range []string{"initramfs-backend", "unsupported", "systemd"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("doctor omitted %q: %s", want, out)
 		}
 	}
 }

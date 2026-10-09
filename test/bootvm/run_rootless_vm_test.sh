@@ -581,8 +581,29 @@ if [[ "${BOOTVM_SCENARIO}" == "arch-grub-cleanup" ]]; then
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo cat /boot/grub/grub.cfg' >"${WORK_DIR}/generated-grub.cfg"
   set_status "arch-cleanup-verify"
   ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo env BOOTRECOV_ACCEPT_RISK=1 BOOTRECOV_BOOTLOADER=grub bash /tmp/guest_arch_cleanup.sh verify'
+
+  scp "${SCP_OPTS[@]}" "${ROOT_DIR}/test/bootvm/guest_arch_mkinitcpio.sh" "${VM_USER}@${VM_HOST}:/tmp/guest_arch_mkinitcpio.sh" >/dev/null
+  set_status "arch-mkinitcpio-prepare"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo bash /tmp/guest_arch_mkinitcpio.sh prepare'
+  set_status "arch-mkinitcpio-recovery-boot"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo systemctl poweroff' || true
+  for _ in $(seq 1 60); do
+    if ! qemu_alive; then break; fi
+    sleep 1
+  done
+  if qemu_alive; then
+    echo "Arch guest did not power off before mkinitcpio recovery boot" >&2
+    exit 1
+  fi
+  cp -f "$(find_ovmf_vars)" "${OVMF_VARS_FILE}"
+  launch_qemu
+  wait_for_ssh 360
+  scp "${SCP_OPTS[@]}" "${BIN_PATH}" "${VM_USER}@${VM_HOST}:/tmp/bootrecov" >/dev/null
+  scp "${SCP_OPTS[@]}" "${ROOT_DIR}/test/bootvm/guest_arch_mkinitcpio.sh" "${VM_USER}@${VM_HOST}:/tmp/guest_arch_mkinitcpio.sh" >/dev/null
+  set_status "arch-mkinitcpio-verify"
+  ssh "${SSH_OPTS[@]}" "${VM_USER}@${VM_HOST}" 'sudo bash /tmp/guest_arch_mkinitcpio.sh verify'
   set_status "passed"
-  echo "Arch GRUB module-cleanup VM test passed."
+  echo "Arch GRUB module-cleanup and mkinitcpio restore VM test passed."
   echo "serial log: ${SERIAL_LOG}"
   exit 0
 fi

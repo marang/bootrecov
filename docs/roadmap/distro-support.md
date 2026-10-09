@@ -2,7 +2,7 @@
 
 ## Current State
 
-Bootrecov currently has platform detection for Arch, Fedora-family, Ubuntu, and Debian through `/etc/os-release`. Arch has pacman/mkinitcpio hook support. Fedora-family systems have DNF/dracut hook support, BLS-first GRUB entry support when the active mirror is on the same boot filesystem, a Fedora `/boot/bootrecov-snapshots` mirror default for BLS layouts, and an explicit Fedora GRUB/BLS VM gate. Ubuntu and Debian have explicit GRUB + EFI VM gate targets, and apt/dpkg hooks are intentionally not implemented yet.
+Bootrecov currently has platform detection for Arch, Fedora-family, Ubuntu, and Debian through `/etc/os-release`. Arch has pacman/BusyBox-mkinitcpio hook support; systemd-based and ambiguous mkinitcpio configurations are refused because there is no systemd initramfs restore unit. Fedora-family systems have DNF/dracut hook support, BLS-first GRUB entry support when the active mirror is on the same boot filesystem, a Fedora `/boot/bootrecov-snapshots` mirror default for BLS layouts, and an explicit Fedora GRUB/BLS VM gate. Ubuntu and Debian have explicit GRUB + EFI VM gate targets, and apt/dpkg hooks are intentionally not implemented yet.
 
 ## Priority 1: Ubuntu and Debian
 

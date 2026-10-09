@@ -57,6 +57,8 @@ type RuntimeEnvironment struct {
 	BootloaderName      string
 	BootloaderSupported bool
 	HookSupported       bool
+	InitramfsMode       string
+	InitramfsReason     string
 	Layout              SystemLayout
 	Warnings            []string
 }
@@ -170,7 +172,7 @@ func ConfigureDetectedEnvironment() RuntimeEnvironment {
 }
 
 func CurrentRuntimeEnvironment() RuntimeEnvironment {
-	return RuntimeEnvironment{
+	info := RuntimeEnvironment{
 		PlatformID:          currentPlatformID(),
 		PlatformName:        activePlatformName,
 		BootloaderID:        currentBootloaderID(),
@@ -180,6 +182,12 @@ func CurrentRuntimeEnvironment() RuntimeEnvironment {
 		Layout:              currentSystemLayout(),
 		Warnings:            append([]string{}, activeWarnings...),
 	}
+	if info.PlatformID == PlatformArch {
+		mode := inspectMkinitcpioMode(MkinitcpioConfPath)
+		info.InitramfsMode = mode.name
+		info.InitramfsReason = mode.reason
+	}
+	return info
 }
 
 func currentSystemLayout() SystemLayout {
@@ -240,8 +248,9 @@ func ensurePlatformHookSupported() error {
 func ensureInitramfsHookSupported() error {
 	switch currentPlatformID() {
 	case PlatformArch:
-		if !fileExists(MkinitcpioConfPath) {
-			return fmt.Errorf("%w: mkinitcpio config not found at %s", ErrUnsupportedInitramfsHook, MkinitcpioConfPath)
+		mode := inspectMkinitcpioMode(MkinitcpioConfPath)
+		if mode.name != "busybox" || mode.reason != "" {
+			return fmt.Errorf("%w: %s", ErrUnsupportedInitramfsHook, mode.reason)
 		}
 	case PlatformFedora:
 		if strings.TrimSpace(DracutBin) == "" {

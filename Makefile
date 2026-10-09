@@ -17,7 +17,7 @@ help:
 	@echo "  make test-bootvm-requirements Check host requirements for rootless VM test"
 	@echo "  make test-bootvm-prepare  Pre-cache VM assets (optional; test-bootvm auto-runs this when needed)"
 	@echo "  make test-bootvm          Run rootless QEMU Ubuntu+GRUB boot test (auto-prepare + guest smoke test)"
-	@echo "  make test-bootvm-arch-grub-cleanup Run Arch GRUB recovery boot and module/DKMS cleanup gate"
+	@echo "  make test-bootvm-arch-grub-cleanup Run Arch GRUB cleanup and BusyBox mkinitcpio restore boot gate"
 	@echo "  make test-bootvm-ubuntu-grub Run explicit Ubuntu+GRUB VM gate"
 	@echo "  make test-bootvm-debian-grub Run explicit Debian+GRUB VM gate"
 	@echo "  make test-bootvm-fedora-grub-bls Run explicit Fedora+GRUB/BLS VM gate"
